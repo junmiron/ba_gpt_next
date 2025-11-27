@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Validated Tax Filing Submission · Future (TO-BE) Process Flows" [fillcolor=lightgreen, label="Start: Validated Tax Filing Submission · Future (TO-BE) Process Flows\n(Start)"];
+  "Happy #1: Finance exports data in standardized format" [label="Happy #1: Finance exports data in standardized format"];
+  "Happy #2: Portal validates schema before SFTP upload" [label="Happy #2: Portal validates schema before SFTP upload"];
+  "Happy #3: Upload confirmed and processed by third-party platform" [label="Happy #3: Upload confirmed and processed by third-party platform"];
+  "Happy #4: Success status returned with timestamp and audit log" [label="Happy #4: Success status returned with timestamp and audit log"];
+  "Unhappy #1: Invalid schema triggers rejection and rollback" [label="Unhappy #1: Invalid schema triggers rejection and rollback"];
+  "Unhappy #2: Upload fails due to network or server timeout" [label="Unhappy #2: Upload fails due to network or server timeout"];
+  "Unhappy #3: No confirmation sent to finance team upon failure" [label="Unhappy #3: No confirmation sent to finance team upon failure"];
+  "internal:Start: Validated Tax Filing Submission · Future (TO-BE) Process Flows" -> "Start: Validated Tax Filing Submission · Future (TO-BE) Process Flows";
+  "internal:Happy #1: Finance exports data in standardized format" -> "Happy #1: Finance exports data in standardized format";
+  "Start: Validated Tax Filing Submission · Future (TO-BE) Process Flows" -> "Happy #1: Finance exports data in standardized format";
+  "internal:Happy #2: Portal validates schema before SFTP upload" -> "Happy #2: Portal validates schema before SFTP upload";
+  "Happy #1: Finance exports data in standardized format" -> "Happy #2: Portal validates schema before SFTP upload";
+  "internal:Happy #3: Upload confirmed and processed by third-party platform" -> "Happy #3: Upload confirmed and processed by third-party platform";
+  "Happy #2: Portal validates schema before SFTP upload" -> "Happy #3: Upload confirmed and processed by third-party platform";
+  "internal:Happy #4: Success status returned with timestamp and audit log" -> "Happy #4: Success status returned with timestamp and audit log";
+  "Happy #3: Upload confirmed and processed by third-party platform" -> "Happy #4: Success status returned with timestamp and audit log";
+  "internal:Unhappy #1: Invalid schema triggers rejection and rollback" -> "Unhappy #1: Invalid schema triggers rejection and rollback";
+  "Start: Validated Tax Filing Submission · Future (TO-BE) Process Flows" -> "Unhappy #1: Invalid schema triggers rejection and rollback";
+  "internal:Unhappy #2: Upload fails due to network or server timeout" -> "Unhappy #2: Upload fails due to network or server timeout";
+  "Unhappy #1: Invalid schema triggers rejection and rollback" -> "Unhappy #2: Upload fails due to network or server timeout";
+  "internal:Unhappy #3: No confirmation sent to finance team upon failure" -> "Unhappy #3: No confirmation sent to finance team upon failure";
+  "Unhappy #2: Upload fails due to network or server timeout" -> "Unhappy #3: No confirmation sent to finance team upon failure";
+}

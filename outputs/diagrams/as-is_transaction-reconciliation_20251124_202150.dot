@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Transaction Reconciliation · AS-IS Process Flows" [fillcolor=lightgreen, label="Start: Transaction Reconciliation · AS-IS Process Flows\n(Start)"];
+  "Happy #1: Bank sends transaction data via API" [label="Happy #1: Bank sends transaction data via API"];
+  "Happy #2: Finance team downloads and compares with CRM data manually" [label="Happy #2: Finance team downloads and compares with CRM data manually"];
+  "Happy #3: Discrepancies identified and logged in CRM" [label="Happy #3: Discrepancies identified and logged in CRM"];
+  "Happy #4: Support tickets created for resolution" [label="Happy #4: Support tickets created for resolution"];
+  "Unhappy #1: API downtime prevents data access" [label="Unhappy #1: API downtime prevents data access"];
+  "Unhappy #2: Manual errors during data comparison" [label="Unhappy #2: Manual errors during data comparison"];
+  "Unhappy #3: Delayed ticket resolution due to lack of real-time visibility" [label="Unhappy #3: Delayed ticket resolution due to lack of real-time visibility"];
+  "internal:Start: Transaction Reconciliation · AS-IS Process Flows" -> "Start: Transaction Reconciliation · AS-IS Process Flows";
+  "internal:Happy #1: Bank sends transaction data via API" -> "Happy #1: Bank sends transaction data via API";
+  "Start: Transaction Reconciliation · AS-IS Process Flows" -> "Happy #1: Bank sends transaction data via API";
+  "internal:Happy #2: Finance team downloads and compares with CRM data manually" -> "Happy #2: Finance team downloads and compares with CRM data manually";
+  "Happy #1: Bank sends transaction data via API" -> "Happy #2: Finance team downloads and compares with CRM data manually";
+  "internal:Happy #3: Discrepancies identified and logged in CRM" -> "Happy #3: Discrepancies identified and logged in CRM";
+  "Happy #2: Finance team downloads and compares with CRM data manually" -> "Happy #3: Discrepancies identified and logged in CRM";
+  "internal:Happy #4: Support tickets created for resolution" -> "Happy #4: Support tickets created for resolution";
+  "Happy #3: Discrepancies identified and logged in CRM" -> "Happy #4: Support tickets created for resolution";
+  "internal:Unhappy #1: API downtime prevents data access" -> "Unhappy #1: API downtime prevents data access";
+  "Start: Transaction Reconciliation · AS-IS Process Flows" -> "Unhappy #1: API downtime prevents data access";
+  "internal:Unhappy #2: Manual errors during data comparison" -> "Unhappy #2: Manual errors during data comparison";
+  "Unhappy #1: API downtime prevents data access" -> "Unhappy #2: Manual errors during data comparison";
+  "internal:Unhappy #3: Delayed ticket resolution due to lack of real-time visibility" -> "Unhappy #3: Delayed ticket resolution due to lack of real-time visibility";
+  "Unhappy #2: Manual errors during data comparison" -> "Unhappy #3: Delayed ticket resolution due to lack of real-time visibility";
+}

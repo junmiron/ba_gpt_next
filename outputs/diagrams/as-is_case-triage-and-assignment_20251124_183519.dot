@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Case Triage and Assignment · AS-IS Process Flows" [fillcolor=lightgreen, label="Start: Case Triage and Assignment · AS-IS Process Flows\n(Start)"];
+  "Happy #1: Agent receives case via email or chat." [label="Happy #1: Agent receives case via email or chat."];
+  "Happy #2: Agent manually reviews case details." [label="Happy #2: Agent manually reviews case details."];
+  "Happy #3: Agent assigns case based on personal judgment." [label="Happy #3: Agent assigns case based on personal judgment."];
+  "Happy #4: Case is logged in support system with no real-time tracking." [label="Happy #4: Case is logged in support system with no real-time tracking."];
+  "Unhappy #1: Case is misrouted due to lack of context or experience." [label="Unhappy #1: Case is misrouted due to lack of context or experience."];
+  "Unhappy #2: Agent unaware of SLA or priority—leads to delays." [label="Unhappy #2: Agent unaware of SLA or priority—leads to delays."];
+  "Unhappy #3: Case lost due to poor tracking or system fragmentation." [label="Unhappy #3: Case lost due to poor tracking or system fragmentation."];
+  "internal:Start: Case Triage and Assignment · AS-IS Process Flows" -> "Start: Case Triage and Assignment · AS-IS Process Flows";
+  "internal:Happy #1: Agent receives case via email or chat." -> "Happy #1: Agent receives case via email or chat.";
+  "Start: Case Triage and Assignment · AS-IS Process Flows" -> "Happy #1: Agent receives case via email or chat.";
+  "internal:Happy #2: Agent manually reviews case details." -> "Happy #2: Agent manually reviews case details.";
+  "Happy #1: Agent receives case via email or chat." -> "Happy #2: Agent manually reviews case details.";
+  "internal:Happy #3: Agent assigns case based on personal judgment." -> "Happy #3: Agent assigns case based on personal judgment.";
+  "Happy #2: Agent manually reviews case details." -> "Happy #3: Agent assigns case based on personal judgment.";
+  "internal:Happy #4: Case is logged in support system with no real-time tracking." -> "Happy #4: Case is logged in support system with no real-time tracking.";
+  "Happy #3: Agent assigns case based on personal judgment." -> "Happy #4: Case is logged in support system with no real-time tracking.";
+  "internal:Unhappy #1: Case is misrouted due to lack of context or experience." -> "Unhappy #1: Case is misrouted due to lack of context or experience.";
+  "Start: Case Triage and Assignment · AS-IS Process Flows" -> "Unhappy #1: Case is misrouted due to lack of context or experience.";
+  "internal:Unhappy #2: Agent unaware of SLA or priority—leads to delays." -> "Unhappy #2: Agent unaware of SLA or priority—leads to delays.";
+  "Unhappy #1: Case is misrouted due to lack of context or experience." -> "Unhappy #2: Agent unaware of SLA or priority—leads to delays.";
+  "internal:Unhappy #3: Case lost due to poor tracking or system fragmentation." -> "Unhappy #3: Case lost due to poor tracking or system fragmentation.";
+  "Unhappy #2: Agent unaware of SLA or priority—leads to delays." -> "Unhappy #3: Case lost due to poor tracking or system fragmentation.";
+}

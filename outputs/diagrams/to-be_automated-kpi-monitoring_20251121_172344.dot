@@ -1,0 +1,32 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Automated KPI Monitoring · Future (TO-BE) Process Flows" [fillcolor=lightgreen, label="Start: Automated KPI Monitoring · Future (TO-BE) Process Flows\n(Start)"];
+  "Happy #1: Integrated data from Shopify Plus, Zendesk, and GA4 flows via stable…" [label="Happy #1: Integrated data from Shopify Plus, Zendesk, and GA4 flows via stable…"];
+  "Happy #2: Daily health checks validate data integrity and API stability." [label="Happy #2: Daily health checks validate data integrity and API stability."];
+  "Happy #3: KPIs (ticket volume, retention) are calculated and updated weekly." [label="Happy #3: KPIs (ticket volume, retention) are calculated and updated weekly."];
+  "Happy #4: Dashboards reflect real-time KPIs with role-based access." [label="Happy #4: Dashboards reflect real-time KPIs with role-based access."];
+  "Happy #5: Anomalies trigger alerts and are reviewed biweekly." [label="Happy #5: Anomalies trigger alerts and are reviewed biweekly."];
+  "Unhappy #1: API failure or data format change disrupts ingestion." [label="Unhappy #1: API failure or data format change disrupts ingestion."];
+  "Unhappy #2: Data mapping errors between systems cause incomplete KPIs." [label="Unhappy #2: Data mapping errors between systems cause incomplete KPIs."];
+  "Unhappy #3: Invalid or missing session IDs in GA4 impact retention accuracy." [label="Unhappy #3: Invalid or missing session IDs in GA4 impact retention accuracy."];
+  "internal:Start: Automated KPI Monitoring · Future (TO-BE) Process Flows" -> "Start: Automated KPI Monitoring · Future (TO-BE) Process Flows";
+  "internal:Happy #1: Integrated data from Shopify Plus, Zendesk, and GA4 flows via stable…" -> "Happy #1: Integrated data from Shopify Plus, Zendesk, and GA4 flows via stable…";
+  "Start: Automated KPI Monitoring · Future (TO-BE) Process Flows" -> "Happy #1: Integrated data from Shopify Plus, Zendesk, and GA4 flows via stable…";
+  "internal:Happy #2: Daily health checks validate data integrity and API stability." -> "Happy #2: Daily health checks validate data integrity and API stability.";
+  "Happy #1: Integrated data from Shopify Plus, Zendesk, and GA4 flows via stable…" -> "Happy #2: Daily health checks validate data integrity and API stability.";
+  "internal:Happy #3: KPIs (ticket volume, retention) are calculated and updated weekly." -> "Happy #3: KPIs (ticket volume, retention) are calculated and updated weekly.";
+  "Happy #2: Daily health checks validate data integrity and API stability." -> "Happy #3: KPIs (ticket volume, retention) are calculated and updated weekly.";
+  "internal:Happy #4: Dashboards reflect real-time KPIs with role-based access." -> "Happy #4: Dashboards reflect real-time KPIs with role-based access.";
+  "Happy #3: KPIs (ticket volume, retention) are calculated and updated weekly." -> "Happy #4: Dashboards reflect real-time KPIs with role-based access.";
+  "internal:Happy #5: Anomalies trigger alerts and are reviewed biweekly." -> "Happy #5: Anomalies trigger alerts and are reviewed biweekly.";
+  "Happy #4: Dashboards reflect real-time KPIs with role-based access." -> "Happy #5: Anomalies trigger alerts and are reviewed biweekly.";
+  "internal:Unhappy #1: API failure or data format change disrupts ingestion." -> "Unhappy #1: API failure or data format change disrupts ingestion.";
+  "Start: Automated KPI Monitoring · Future (TO-BE) Process Flows" -> "Unhappy #1: API failure or data format change disrupts ingestion.";
+  "internal:Unhappy #2: Data mapping errors between systems cause incomplete KPIs." -> "Unhappy #2: Data mapping errors between systems cause incomplete KPIs.";
+  "Unhappy #1: API failure or data format change disrupts ingestion." -> "Unhappy #2: Data mapping errors between systems cause incomplete KPIs.";
+  "internal:Unhappy #3: Invalid or missing session IDs in GA4 impact retention accuracy." -> "Unhappy #3: Invalid or missing session IDs in GA4 impact retention accuracy.";
+  "Unhappy #2: Data mapping errors between systems cause incomplete KPIs." -> "Unhappy #3: Invalid or missing session IDs in GA4 impact retention accuracy.";
+}

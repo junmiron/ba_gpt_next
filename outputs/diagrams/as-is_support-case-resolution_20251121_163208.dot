@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Support Case Resolution · AS-IS Process Flows" [fillcolor=lightgreen, label="Start: Support Case Resolution · AS-IS Process Flows\n(Start)"];
+  "Happy #1: Agent receives ticket and checks CRM for history." [label="Happy #1: Agent receives ticket and checks CRM for history."];
+  "Happy #2: Resolves issue based on available data." [label="Happy #2: Resolves issue based on available data."];
+  "Happy #3: Documents resolution and closes case." [label="Happy #3: Documents resolution and closes case."];
+  "Happy #4: Customer receives post-resolution survey." [label="Happy #4: Customer receives post-resolution survey."];
+  "Unhappy #1: Agent cannot view onboarding progress—assumes customer is ready." [label="Unhappy #1: Agent cannot view onboarding progress—assumes customer is ready."];
+  "Unhappy #2: Case reopened due to incorrect assumptions or incomplete info." [label="Unhappy #2: Case reopened due to incorrect assumptions or incomplete info."];
+  "Unhappy #3: No audit trail for decisions or changes made." [label="Unhappy #3: No audit trail for decisions or changes made."];
+  "internal:Start: Support Case Resolution · AS-IS Process Flows" -> "Start: Support Case Resolution · AS-IS Process Flows";
+  "internal:Happy #1: Agent receives ticket and checks CRM for history." -> "Happy #1: Agent receives ticket and checks CRM for history.";
+  "Start: Support Case Resolution · AS-IS Process Flows" -> "Happy #1: Agent receives ticket and checks CRM for history.";
+  "internal:Happy #2: Resolves issue based on available data." -> "Happy #2: Resolves issue based on available data.";
+  "Happy #1: Agent receives ticket and checks CRM for history." -> "Happy #2: Resolves issue based on available data.";
+  "internal:Happy #3: Documents resolution and closes case." -> "Happy #3: Documents resolution and closes case.";
+  "Happy #2: Resolves issue based on available data." -> "Happy #3: Documents resolution and closes case.";
+  "internal:Happy #4: Customer receives post-resolution survey." -> "Happy #4: Customer receives post-resolution survey.";
+  "Happy #3: Documents resolution and closes case." -> "Happy #4: Customer receives post-resolution survey.";
+  "internal:Unhappy #1: Agent cannot view onboarding progress—assumes customer is ready." -> "Unhappy #1: Agent cannot view onboarding progress—assumes customer is ready.";
+  "Start: Support Case Resolution · AS-IS Process Flows" -> "Unhappy #1: Agent cannot view onboarding progress—assumes customer is ready.";
+  "internal:Unhappy #2: Case reopened due to incorrect assumptions or incomplete info." -> "Unhappy #2: Case reopened due to incorrect assumptions or incomplete info.";
+  "Unhappy #1: Agent cannot view onboarding progress—assumes customer is ready." -> "Unhappy #2: Case reopened due to incorrect assumptions or incomplete info.";
+  "internal:Unhappy #3: No audit trail for decisions or changes made." -> "Unhappy #3: No audit trail for decisions or changes made.";
+  "Unhappy #2: Case reopened due to incorrect assumptions or incomplete info." -> "Unhappy #3: No audit trail for decisions or changes made.";
+}

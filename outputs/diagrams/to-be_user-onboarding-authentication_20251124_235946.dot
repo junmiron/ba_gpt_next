@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: User Onboarding & Authentication · Future (TO-BE) Process Flows" [fillcolor=lightgreen, label="Start: User Onboarding & Authentication · Future (TO-BE) Process Flows\n(Start)"];
+  "Happy #1: User receives secure SSO link via email." [label="Happy #1: User receives secure SSO link via email."];
+  "Happy #2: Redirected to Okta SSO with MFA prompt." [label="Happy #2: Redirected to Okta SSO with MFA prompt."];
+  "Happy #3: Successful authentication grants access to role-appropriate portal." [label="Happy #3: Successful authentication grants access to role-appropriate portal."];
+  "Happy #4: Onboarding wizard guides setup with real-time validation." [label="Happy #4: Onboarding wizard guides setup with real-time validation."];
+  "Unhappy #1: SSO outage triggers fallback to API gateway." [label="Unhappy #1: SSO outage triggers fallback to API gateway."];
+  "Unhappy #2: Invalid role blocks access with admin alert." [label="Unhappy #2: Invalid role blocks access with admin alert."];
+  "Unhappy #3: Timeout prompts retry with session recovery." [label="Unhappy #3: Timeout prompts retry with session recovery."];
+  "internal:Start: User Onboarding & Authentication · Future (TO-BE) Process Flows" -> "Start: User Onboarding & Authentication · Future (TO-BE) Process Flows";
+  "internal:Happy #1: User receives secure SSO link via email." -> "Happy #1: User receives secure SSO link via email.";
+  "Start: User Onboarding & Authentication · Future (TO-BE) Process Flows" -> "Happy #1: User receives secure SSO link via email.";
+  "internal:Happy #2: Redirected to Okta SSO with MFA prompt." -> "Happy #2: Redirected to Okta SSO with MFA prompt.";
+  "Happy #1: User receives secure SSO link via email." -> "Happy #2: Redirected to Okta SSO with MFA prompt.";
+  "internal:Happy #3: Successful authentication grants access to role-appropriate portal." -> "Happy #3: Successful authentication grants access to role-appropriate portal.";
+  "Happy #2: Redirected to Okta SSO with MFA prompt." -> "Happy #3: Successful authentication grants access to role-appropriate portal.";
+  "internal:Happy #4: Onboarding wizard guides setup with real-time validation." -> "Happy #4: Onboarding wizard guides setup with real-time validation.";
+  "Happy #3: Successful authentication grants access to role-appropriate portal." -> "Happy #4: Onboarding wizard guides setup with real-time validation.";
+  "internal:Unhappy #1: SSO outage triggers fallback to API gateway." -> "Unhappy #1: SSO outage triggers fallback to API gateway.";
+  "Start: User Onboarding & Authentication · Future (TO-BE) Process Flows" -> "Unhappy #1: SSO outage triggers fallback to API gateway.";
+  "internal:Unhappy #2: Invalid role blocks access with admin alert." -> "Unhappy #2: Invalid role blocks access with admin alert.";
+  "Unhappy #1: SSO outage triggers fallback to API gateway." -> "Unhappy #2: Invalid role blocks access with admin alert.";
+  "internal:Unhappy #3: Timeout prompts retry with session recovery." -> "Unhappy #3: Timeout prompts retry with session recovery.";
+  "Unhappy #2: Invalid role blocks access with admin alert." -> "Unhappy #3: Timeout prompts retry with session recovery.";
+}

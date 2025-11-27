@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: User Onboarding · AS-IS Process Flows" [fillcolor=lightgreen, label="Start: User Onboarding · AS-IS Process Flows\n(Start)"];
+  "Happy #1: User receives credentials via email." [label="Happy #1: User receives credentials via email."];
+  "Happy #2: Navigates to legacy portal login page." [label="Happy #2: Navigates to legacy portal login page."];
+  "Happy #3: Enters valid credentials and logs in successfully." [label="Happy #3: Enters valid credentials and logs in successfully."];
+  "Happy #4: Completes initial profile setup without errors." [label="Happy #4: Completes initial profile setup without errors."];
+  "Unhappy #1: Credentials are expired or invalid, causing login failure." [label="Unhappy #1: Credentials are expired or invalid, causing login failure."];
+  "Unhappy #2: System times out during authentication with no retry guidance." [label="Unhappy #2: System times out during authentication with no retry guidance."];
+  "Unhappy #3: User redirected to a generic error page with no troubleshooting steps." [label="Unhappy #3: User redirected to a generic error page with no troubleshooting steps."];
+  "internal:Start: User Onboarding · AS-IS Process Flows" -> "Start: User Onboarding · AS-IS Process Flows";
+  "internal:Happy #1: User receives credentials via email." -> "Happy #1: User receives credentials via email.";
+  "Start: User Onboarding · AS-IS Process Flows" -> "Happy #1: User receives credentials via email.";
+  "internal:Happy #2: Navigates to legacy portal login page." -> "Happy #2: Navigates to legacy portal login page.";
+  "Happy #1: User receives credentials via email." -> "Happy #2: Navigates to legacy portal login page.";
+  "internal:Happy #3: Enters valid credentials and logs in successfully." -> "Happy #3: Enters valid credentials and logs in successfully.";
+  "Happy #2: Navigates to legacy portal login page." -> "Happy #3: Enters valid credentials and logs in successfully.";
+  "internal:Happy #4: Completes initial profile setup without errors." -> "Happy #4: Completes initial profile setup without errors.";
+  "Happy #3: Enters valid credentials and logs in successfully." -> "Happy #4: Completes initial profile setup without errors.";
+  "internal:Unhappy #1: Credentials are expired or invalid, causing login failure." -> "Unhappy #1: Credentials are expired or invalid, causing login failure.";
+  "Start: User Onboarding · AS-IS Process Flows" -> "Unhappy #1: Credentials are expired or invalid, causing login failure.";
+  "internal:Unhappy #2: System times out during authentication with no retry guidance." -> "Unhappy #2: System times out during authentication with no retry guidance.";
+  "Unhappy #1: Credentials are expired or invalid, causing login failure." -> "Unhappy #2: System times out during authentication with no retry guidance.";
+  "internal:Unhappy #3: User redirected to a generic error page with no troubleshooting steps." -> "Unhappy #3: User redirected to a generic error page with no troubleshooting steps.";
+  "Unhappy #2: System times out during authentication with no retry guidance." -> "Unhappy #3: User redirected to a generic error page with no troubleshooting steps.";
+}

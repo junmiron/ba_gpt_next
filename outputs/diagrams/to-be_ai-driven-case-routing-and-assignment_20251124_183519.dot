@@ -1,0 +1,32 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: AI-Driven Case Routing and Assignment · Future (TO-BE) Process Flows" [fillcolor=lightgreen, label="Start: AI-Driven Case Routing and Assignment · Future (TO-BE) Process Flows\n(Start)"];
+  "Happy #1: Case submitted via email, chat, or phone." [label="Happy #1: Case submitted via email, chat, or phone."];
+  "Happy #2: AI analyzes content, urgency, and agent skill." [label="Happy #2: AI analyzes content, urgency, and agent skill."];
+  "Happy #3: Case routed to optimal agent or Tier 2 Engineer." [label="Happy #3: Case routed to optimal agent or Tier 2 Engineer."];
+  "Happy #4: Real-time dashboard updates with status and routing rationale." [label="Happy #4: Real-time dashboard updates with status and routing rationale."];
+  "Happy #5: Agent receives alert with full context and SLA details." [label="Happy #5: Agent receives alert with full context and SLA details."];
+  "Unhappy #1: AI fails to classify—escalated to manual review." [label="Unhappy #1: AI fails to classify—escalated to manual review."];
+  "Unhappy #2: CRM integration fails—case flagged and logged." [label="Unhappy #2: CRM integration fails—case flagged and logged."];
+  "Unhappy #3: Data inconsistency detected—case held for audit and correction." [label="Unhappy #3: Data inconsistency detected—case held for audit and correction."];
+  "internal:Start: AI-Driven Case Routing and Assignment · Future (TO-BE) Process Flows" -> "Start: AI-Driven Case Routing and Assignment · Future (TO-BE) Process Flows";
+  "internal:Happy #1: Case submitted via email, chat, or phone." -> "Happy #1: Case submitted via email, chat, or phone.";
+  "Start: AI-Driven Case Routing and Assignment · Future (TO-BE) Process Flows" -> "Happy #1: Case submitted via email, chat, or phone.";
+  "internal:Happy #2: AI analyzes content, urgency, and agent skill." -> "Happy #2: AI analyzes content, urgency, and agent skill.";
+  "Happy #1: Case submitted via email, chat, or phone." -> "Happy #2: AI analyzes content, urgency, and agent skill.";
+  "internal:Happy #3: Case routed to optimal agent or Tier 2 Engineer." -> "Happy #3: Case routed to optimal agent or Tier 2 Engineer.";
+  "Happy #2: AI analyzes content, urgency, and agent skill." -> "Happy #3: Case routed to optimal agent or Tier 2 Engineer.";
+  "internal:Happy #4: Real-time dashboard updates with status and routing rationale." -> "Happy #4: Real-time dashboard updates with status and routing rationale.";
+  "Happy #3: Case routed to optimal agent or Tier 2 Engineer." -> "Happy #4: Real-time dashboard updates with status and routing rationale.";
+  "internal:Happy #5: Agent receives alert with full context and SLA details." -> "Happy #5: Agent receives alert with full context and SLA details.";
+  "Happy #4: Real-time dashboard updates with status and routing rationale." -> "Happy #5: Agent receives alert with full context and SLA details.";
+  "internal:Unhappy #1: AI fails to classify—escalated to manual review." -> "Unhappy #1: AI fails to classify—escalated to manual review.";
+  "Start: AI-Driven Case Routing and Assignment · Future (TO-BE) Process Flows" -> "Unhappy #1: AI fails to classify—escalated to manual review.";
+  "internal:Unhappy #2: CRM integration fails—case flagged and logged." -> "Unhappy #2: CRM integration fails—case flagged and logged.";
+  "Unhappy #1: AI fails to classify—escalated to manual review." -> "Unhappy #2: CRM integration fails—case flagged and logged.";
+  "internal:Unhappy #3: Data inconsistency detected—case held for audit and correction." -> "Unhappy #3: Data inconsistency detected—case held for audit and correction.";
+  "Unhappy #2: CRM integration fails—case flagged and logged." -> "Unhappy #3: Data inconsistency detected—case held for audit and correction.";
+}

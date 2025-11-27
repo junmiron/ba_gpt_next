@@ -1,0 +1,26 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Case Resolution Tracking · AS-IS Process Flows" [fillcolor=lightgreen, label="Start: Case Resolution Tracking · AS-IS Process Flows\n(Start)"];
+  "Happy #1: Agent logs case in CRM manually." [label="Happy #1: Agent logs case in CRM manually."];
+  "Happy #2: Weekly export of case data to Excel." [label="Happy #2: Weekly export of case data to Excel."];
+  "Happy #3: Monthly analysis by CX team for trend identification." [label="Happy #3: Monthly analysis by CX team for trend identification."];
+  "Unhappy #1: Manual entry errors cause missing or delayed case data." [label="Unhappy #1: Manual entry errors cause missing or delayed case data."];
+  "Unhappy #2: Incomplete datasets hinder accurate CSAT trend analysis." [label="Unhappy #2: Incomplete datasets hinder accurate CSAT trend analysis."];
+  "Unhappy #3: Inconsistent resolution time reporting across teams." [label="Unhappy #3: Inconsistent resolution time reporting across teams."];
+  "internal:Start: Case Resolution Tracking · AS-IS Process Flows" -> "Start: Case Resolution Tracking · AS-IS Process Flows";
+  "internal:Happy #1: Agent logs case in CRM manually." -> "Happy #1: Agent logs case in CRM manually.";
+  "Start: Case Resolution Tracking · AS-IS Process Flows" -> "Happy #1: Agent logs case in CRM manually.";
+  "internal:Happy #2: Weekly export of case data to Excel." -> "Happy #2: Weekly export of case data to Excel.";
+  "Happy #1: Agent logs case in CRM manually." -> "Happy #2: Weekly export of case data to Excel.";
+  "internal:Happy #3: Monthly analysis by CX team for trend identification." -> "Happy #3: Monthly analysis by CX team for trend identification.";
+  "Happy #2: Weekly export of case data to Excel." -> "Happy #3: Monthly analysis by CX team for trend identification.";
+  "internal:Unhappy #1: Manual entry errors cause missing or delayed case data." -> "Unhappy #1: Manual entry errors cause missing or delayed case data.";
+  "Start: Case Resolution Tracking · AS-IS Process Flows" -> "Unhappy #1: Manual entry errors cause missing or delayed case data.";
+  "internal:Unhappy #2: Incomplete datasets hinder accurate CSAT trend analysis." -> "Unhappy #2: Incomplete datasets hinder accurate CSAT trend analysis.";
+  "Unhappy #1: Manual entry errors cause missing or delayed case data." -> "Unhappy #2: Incomplete datasets hinder accurate CSAT trend analysis.";
+  "internal:Unhappy #3: Inconsistent resolution time reporting across teams." -> "Unhappy #3: Inconsistent resolution time reporting across teams.";
+  "Unhappy #2: Incomplete datasets hinder accurate CSAT trend analysis." -> "Unhappy #3: Inconsistent resolution time reporting across teams.";
+}

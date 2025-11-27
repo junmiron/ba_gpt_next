@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Training & Readiness Integration · Future (TO-BE) Process Flows" [fillcolor=lightgreen, label="Start: Training & Readiness Integration · Future (TO-BE) Process Flows\n(Start)"];
+  "Happy #1: Agent completes LMS training; event sent via authenticated REST API..." [label="Happy #1: Agent completes LMS training; event sent via authenticated REST API..."];
+  "Happy #2: System validates format; logs success or triggers XML fallback if..." [label="Happy #2: System validates format; logs success or triggers XML fallback if..."];
+  "Happy #3: Training status updated in CRM for case assignment and routing..." [label="Happy #3: Training status updated in CRM for case assignment and routing..."];
+  "Happy #4: Auditor reviews data integrity logs monthly for compliance." [label="Happy #4: Auditor reviews data integrity logs monthly for compliance."];
+  "Unhappy #1: LMS API timeout; system falls back to nightly XML export with alert." [label="Unhappy #1: LMS API timeout; system falls back to nightly XML export with alert."];
+  "Unhappy #2: XML export fails due to format mismatch; validation report generated." [label="Unhappy #2: XML export fails due to format mismatch; validation report generated."];
+  "Unhappy #3: Missing training data delays agent eligibility for high-priority cases." [label="Unhappy #3: Missing training data delays agent eligibility for high-priority cases."];
+  "internal:Start: Training & Readiness Integration · Future (TO-BE) Process Flows" -> "Start: Training & Readiness Integration · Future (TO-BE) Process Flows";
+  "internal:Happy #1: Agent completes LMS training; event sent via authenticated REST API..." -> "Happy #1: Agent completes LMS training; event sent via authenticated REST API...";
+  "Start: Training & Readiness Integration · Future (TO-BE) Process Flows" -> "Happy #1: Agent completes LMS training; event sent via authenticated REST API...";
+  "internal:Happy #2: System validates format; logs success or triggers XML fallback if..." -> "Happy #2: System validates format; logs success or triggers XML fallback if...";
+  "Happy #1: Agent completes LMS training; event sent via authenticated REST API..." -> "Happy #2: System validates format; logs success or triggers XML fallback if...";
+  "internal:Happy #3: Training status updated in CRM for case assignment and routing..." -> "Happy #3: Training status updated in CRM for case assignment and routing...";
+  "Happy #2: System validates format; logs success or triggers XML fallback if..." -> "Happy #3: Training status updated in CRM for case assignment and routing...";
+  "internal:Happy #4: Auditor reviews data integrity logs monthly for compliance." -> "Happy #4: Auditor reviews data integrity logs monthly for compliance.";
+  "Happy #3: Training status updated in CRM for case assignment and routing..." -> "Happy #4: Auditor reviews data integrity logs monthly for compliance.";
+  "internal:Unhappy #1: LMS API timeout; system falls back to nightly XML export with alert." -> "Unhappy #1: LMS API timeout; system falls back to nightly XML export with alert.";
+  "Start: Training & Readiness Integration · Future (TO-BE) Process Flows" -> "Unhappy #1: LMS API timeout; system falls back to nightly XML export with alert.";
+  "internal:Unhappy #2: XML export fails due to format mismatch; validation report generated." -> "Unhappy #2: XML export fails due to format mismatch; validation report generated.";
+  "Unhappy #1: LMS API timeout; system falls back to nightly XML export with alert." -> "Unhappy #2: XML export fails due to format mismatch; validation report generated.";
+  "internal:Unhappy #3: Missing training data delays agent eligibility for high-priority cases." -> "Unhappy #3: Missing training data delays agent eligibility for high-priority cases.";
+  "Unhappy #2: XML export fails due to format mismatch; validation report generated." -> "Unhappy #3: Missing training data delays agent eligibility for high-priority cases.";
+}

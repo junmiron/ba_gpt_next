@@ -1,0 +1,29 @@
+digraph Workflow {
+  rankdir=TD;
+  node [shape=box, style=filled, fillcolor=lightblue];
+  edge [color=black, arrowhead=vee];
+
+  "Start: Retention Calculation · AS-IS Process Flows" [fillcolor=lightgreen, label="Start: Retention Calculation · AS-IS Process Flows\n(Start)"];
+  "Happy #1: Insights team pulls Shopify Plus purchase data." [label="Happy #1: Insights team pulls Shopify Plus purchase data."];
+  "Happy #2: GA4 session data is extracted manually." [label="Happy #2: GA4 session data is extracted manually."];
+  "Happy #3: Data is merged and analyzed monthly." [label="Happy #3: Data is merged and analyzed monthly."];
+  "Happy #4: Retention rate is reported to leadership." [label="Happy #4: Retention rate is reported to leadership."];
+  "Unhappy #1: Missing or inconsistent session IDs in GA4." [label="Unhappy #1: Missing or inconsistent session IDs in GA4."];
+  "Unhappy #2: Data mapping errors between systems." [label="Unhappy #2: Data mapping errors between systems."];
+  "Unhappy #3: Manual reconciliation delays reporting." [label="Unhappy #3: Manual reconciliation delays reporting."];
+  "internal:Start: Retention Calculation · AS-IS Process Flows" -> "Start: Retention Calculation · AS-IS Process Flows";
+  "internal:Happy #1: Insights team pulls Shopify Plus purchase data." -> "Happy #1: Insights team pulls Shopify Plus purchase data.";
+  "Start: Retention Calculation · AS-IS Process Flows" -> "Happy #1: Insights team pulls Shopify Plus purchase data.";
+  "internal:Happy #2: GA4 session data is extracted manually." -> "Happy #2: GA4 session data is extracted manually.";
+  "Happy #1: Insights team pulls Shopify Plus purchase data." -> "Happy #2: GA4 session data is extracted manually.";
+  "internal:Happy #3: Data is merged and analyzed monthly." -> "Happy #3: Data is merged and analyzed monthly.";
+  "Happy #2: GA4 session data is extracted manually." -> "Happy #3: Data is merged and analyzed monthly.";
+  "internal:Happy #4: Retention rate is reported to leadership." -> "Happy #4: Retention rate is reported to leadership.";
+  "Happy #3: Data is merged and analyzed monthly." -> "Happy #4: Retention rate is reported to leadership.";
+  "internal:Unhappy #1: Missing or inconsistent session IDs in GA4." -> "Unhappy #1: Missing or inconsistent session IDs in GA4.";
+  "Start: Retention Calculation · AS-IS Process Flows" -> "Unhappy #1: Missing or inconsistent session IDs in GA4.";
+  "internal:Unhappy #2: Data mapping errors between systems." -> "Unhappy #2: Data mapping errors between systems.";
+  "Unhappy #1: Missing or inconsistent session IDs in GA4." -> "Unhappy #2: Data mapping errors between systems.";
+  "internal:Unhappy #3: Manual reconciliation delays reporting." -> "Unhappy #3: Manual reconciliation delays reporting.";
+  "Unhappy #2: Data mapping errors between systems." -> "Unhappy #3: Manual reconciliation delays reporting.";
+}
