@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 
-from dataclasses import dataclass
 from typing import AsyncIterator, Iterable, Optional, Sequence
 from weakref import WeakKeyDictionary
 
@@ -20,12 +19,7 @@ from agent_framework import (
 import agent_framework.devui as maf_devui
 
 from .config import AppSettings, InterviewScope
-from .interview_agent import (
-    BusinessAnalystInterviewAgent,
-    CLOSING_PROMPT,
-    NEGATIVE_FEEDBACK_RESPONSES,
-    TERMINATION_TOKENS,
-)
+from .sessions import BusinessAnalystSession
 from .workflow_visualization import build_interview_workflow
 
 MessageInput = (
@@ -34,17 +28,6 @@ MessageInput = (
     | Sequence[str | FrameworkChatMessage]
     | None
 )
-
-
-@dataclass(slots=True)
-class _SessionState:
-    """Tracks per-thread interview state for the DevUI agent."""
-
-    agent: BusinessAnalystInterviewAgent
-    completed: bool = False
-    awaiting_closing_feedback: bool = False
-    pending_spec_text: Optional[str] = None
-    final_message: Optional[str] = None
 
 
 class BusinessAnalystDevUIAgent:
@@ -61,7 +44,7 @@ class BusinessAnalystDevUIAgent:
             "Guided discovery interview that drafts a functional "
             f"specification for the {scope_line} scope."
         )
-        self._sessions: WeakKeyDictionary[AgentThread, _SessionState] = (
+        self._sessions: WeakKeyDictionary[AgentThread, BusinessAnalystSession] = (
             WeakKeyDictionary()
         )
 
@@ -107,13 +90,15 @@ class BusinessAnalystDevUIAgent:
         **_: object,
     ) -> AsyncIterator[AgentRunResponseUpdate]:
         thread = thread or self.get_new_thread()
-        session_state: Optional[_SessionState] = self._sessions.get(thread)
+        session_state: Optional[BusinessAnalystSession] = self._sessions.get(thread)
         user_text = self._extract_user_text(messages)
 
         if session_state is None:
-            session_state = self._start_session()
-            kickoff = await session_state.agent.kickoff()
-            session_state.agent.record_question(kickoff)
+            session_state = BusinessAnalystSession.create(
+                settings=self._settings,
+                scope=self._scope,
+            )
+            kickoff = await session_state.kickoff()
             await self._append_assistant_message(thread, kickoff)
             yield self._as_update(kickoff)
             self._sessions[thread] = session_state
@@ -125,117 +110,13 @@ class BusinessAnalystDevUIAgent:
 
         await self._append_user_message(thread, user_text)
         assert session_state is not None  # for type checkers
-        if session_state.awaiting_closing_feedback:
-            closing_updates = await self._handle_closing_feedback(
-                thread,
-                session_state,
-                user_text,
-            )
-            for update in closing_updates:
-                yield self._as_update(update)
-            return
-        if user_text.strip().lower() in TERMINATION_TOKENS:
-            final_message = await self._finalize_session(thread, session_state)
-            yield self._as_update(final_message)
-            return
+        responses = await session_state.handle_user_message(user_text)
+        for update in responses:
+            await self._append_assistant_message(thread, update)
+            yield self._as_update(update)
 
-        follow_up = await session_state.agent.next_question(user_text)
-        if follow_up is None:
-            final_message = await self._finalize_session(thread, session_state)
-            yield self._as_update(final_message)
-            return
-
-        session_state.agent.record_question(follow_up)
-        await self._append_assistant_message(thread, follow_up)
-        yield self._as_update(follow_up)
-
-    def _start_session(self) -> _SessionState:
-        agent = BusinessAnalystInterviewAgent(
-            settings=self._settings,
-            scope=self._scope,
-        )
-        return _SessionState(agent=agent)
-
-    async def _finalize_session(
-        self,
-        thread: AgentThread,
-        session: _SessionState,
-    ) -> str:
-        if session.completed and session.final_message:
-            return session.final_message
-        if session.awaiting_closing_feedback and session.final_message:
-            return session.final_message
-
-        spec_text = await session.agent.summarize()
-        session.pending_spec_text = spec_text
-        message = f"{spec_text}\n\n{CLOSING_PROMPT}"
-        await self._append_assistant_message(thread, message)
-        session.awaiting_closing_feedback = True
-        session.final_message = message
-        return message
-
-    async def _handle_closing_feedback(
-        self,
-        thread: AgentThread,
-        session: _SessionState,
-        user_text: str,
-    ) -> list[str]:
-        updates: list[str] = []
-        session.agent.record_question(
-            CLOSING_PROMPT,
-            answer=user_text,
-        )
-        normalized = user_text.strip().lower()
-        wants_update = normalized not in NEGATIVE_FEEDBACK_RESPONSES
-        if wants_update:
-            acknowledgement = (
-                "BA Agent: Thanks! I'll incorporate that feedback into the "
-                "specification."
-            )
-            await self._append_assistant_message(thread, acknowledgement)
-            updates.append(acknowledgement)
-            updated_spec = await session.agent.summarize()
-            session.pending_spec_text = updated_spec
-            spec_message = (
-                "Updated functional specification draft:\n\n"
-                f"{updated_spec}"
-            )
-            await self._append_assistant_message(thread, spec_message)
-            updates.append(spec_message)
-            final_spec = updated_spec
-        else:
-            acknowledgement = (
-                "BA Agent: Understood. We'll keep the specification as-is."
-            )
-            await self._append_assistant_message(thread, acknowledgement)
-            updates.append(acknowledgement)
-            final_spec = session.pending_spec_text
-            if final_spec is None:
-                final_spec = await session.agent.summarize()
-
-        session.pending_spec_text = final_spec
-        artifacts = session.agent.export_spec(final_spec)
-        output_path = artifacts.markdown_path
-        record_id = session.agent.persist_transcript(
-            spec_text=final_spec,
-            spec_path=output_path,
-        )
-        closing_lines = [
-            "Interview complete. Functional specification saved to:",
-            f" - {output_path}",
-        ]
-        if artifacts.pdf_path is not None:
-            closing_lines.append(f" - {artifacts.pdf_path}")
-        if record_id:
-            closing_lines.append(f"Transcript id: {record_id}")
-        closing_message = "\n".join(closing_lines)
-        await self._append_assistant_message(thread, closing_message)
-        updates.append(closing_message)
-        session.completed = True
-        session.awaiting_closing_feedback = False
-        session.final_message = closing_message
-        self._sessions.pop(thread, None)
-        return updates
+        if session_state.completed:
+            self._sessions.pop(thread, None)
 
     async def _append_user_message(
         self,

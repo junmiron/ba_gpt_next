@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, cast
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, cast
 
 from .config import AppSettings, InterviewScope
+from .as_is_agent import AsIsProcess, AsIsReviewResult
 from .interview_agent import (
     BusinessAnalystInterviewAgent,
     CLOSING_PROMPT,
@@ -17,6 +19,7 @@ from .interview_agent import (
 )
 from .maf_client import ChatMessage, MAFChatClient
 from .spec_review_agent import FollowUpQuestion
+from .to_be_agent import ToBeProcess, ToBeReviewResult
 
 ConversationTurn = tuple[str, str]
 
@@ -328,11 +331,201 @@ async def simulate_interview(
     scope: InterviewScope,
     responder: SimulatedStakeholderResponder,
     verbose: bool = True,
+    observer: Optional[
+        Callable[[str, Dict[str, object]], Awaitable[None] | None]
+    ] = None,
 ) -> Dict[str, object]:
     """Run an interview using an LLM-backed stakeholder persona."""
 
     agent = BusinessAnalystInterviewAgent(settings=settings, scope=scope)
     transcript: List[ConversationTurn] = []
+
+    async def _emit(event_type: str, **payload: object) -> None:
+        if observer is None:
+            return
+        try:
+            payload_map: Dict[str, object] = {
+                key: value for key, value in payload.items()
+            }
+            outcome = observer(event_type, payload_map)
+            if asyncio.iscoroutine(outcome):
+                await outcome
+        except Exception:  # pragma: no cover - observer failures should not abort simulation
+            logging.exception("Test agent observer failed for event '%s'", event_type)
+
+    class _SimulatedAsIsReviewer:
+        async def confirm_as_is(
+            self,
+            *,
+            proposed_items: Sequence[str],
+            proposed_processes: Sequence[AsIsProcess],
+            spec_text: str,
+            question: str,
+        ) -> AsIsReviewResult:
+            await _emit(
+                "status",
+                content="Confirming AS-IS understanding with the stakeholder...",
+            )
+            question_text = question.strip() or (
+                "Could you confirm the current-state summary?"
+            )
+            await _emit("message", role="assistant", content=question_text)
+
+            items = [str(item).strip() for item in proposed_items if str(item).strip()]
+            if not items:
+                items = ["Current state details pending stakeholder validation."]
+
+            processes = [
+                AsIsProcess(
+                    name=process.name,
+                    happy_path=list(process.happy_path),
+                    unhappy_path=list(process.unhappy_path),
+                )
+                for process in proposed_processes
+            ]
+
+            summary_lines: List[str] = []
+            summary_lines.append("Proposed AS-IS summary:")
+            for item in items:
+                summary_lines.append(f"- {item}")
+            if processes:
+                summary_lines.append("\nIdentified AS-IS processes:")
+            for process in processes:
+                summary_lines.append(f"- {process.name}")
+                if process.happy_path:
+                    summary_lines.append(
+                        "  Happy path: " + "; ".join(step.strip() for step in process.happy_path if step.strip())
+                    )
+                if process.unhappy_path:
+                    summary_lines.append(
+                        "  Exceptions: " + "; ".join(
+                            step.strip() for step in process.unhappy_path if step.strip()
+                        )
+                    )
+
+            excerpt = spec_text.strip()
+            if len(excerpt) > 1200:
+                excerpt = excerpt[:1200].rstrip() + "\n..."
+
+            prompt_parts = [question_text]
+            if summary_lines:
+                prompt_parts.append("\n".join(summary_lines))
+            if excerpt:
+                prompt_parts.append(
+                    "Functional specification excerpt:\n" + excerpt
+                )
+            prompt_parts.append(
+                "Respond in 1-2 sentences confirming whether the AS-IS summary captures reality. "
+                "Call out only the most critical gaps if any remain."
+            )
+            prompt = "\n\n".join(part for part in prompt_parts if part)
+
+            try:
+                comment = await responder.answer(prompt, transcript)
+            except Exception:  # pragma: no cover - fall back to default comment
+                logging.exception("Simulated AS-IS reviewer failed; using default acknowledgement.")
+                comment = "This matches how things work today."
+
+            stakeholder_comment = comment.strip() or "This matches how things work today."
+            transcript.append((question_text, stakeholder_comment))
+            await _emit("message", role="user", content=stakeholder_comment)
+
+            return AsIsReviewResult(
+                items=items,
+                processes=processes,
+                stakeholder_comment=stakeholder_comment,
+            )
+
+    class _SimulatedToBeReviewer:
+        async def confirm_to_be(
+            self,
+            *,
+            proposed_items: Sequence[str],
+            proposed_processes: Sequence[ToBeProcess],
+            spec_text: str,
+            question: str,
+        ) -> ToBeReviewResult:
+            await _emit(
+                "status",
+                content="Reviewing the target TO-BE vision with the stakeholder...",
+            )
+            question_text = question.strip() or (
+                "Can you confirm the desired future-state vision?"
+            )
+            await _emit("message", role="assistant", content=question_text)
+
+            items = [str(item).strip() for item in proposed_items if str(item).strip()]
+            if not items:
+                items = ["Future state details pending stakeholder validation."]
+
+            processes = [
+                ToBeProcess(
+                    name=process.name,
+                    happy_path=list(process.happy_path),
+                    unhappy_path=list(process.unhappy_path),
+                )
+                for process in proposed_processes
+            ]
+
+            summary_lines: List[str] = []
+            summary_lines.append("Proposed TO-BE summary:")
+            for item in items:
+                summary_lines.append(f"- {item}")
+            if processes:
+                summary_lines.append("\nTarget TO-BE processes:")
+            for process in processes:
+                summary_lines.append(f"- {process.name}")
+                if process.happy_path:
+                    summary_lines.append(
+                        "  Happy path: " + "; ".join(step.strip() for step in process.happy_path if step.strip())
+                    )
+                if process.unhappy_path:
+                    summary_lines.append(
+                        "  Exceptions: " + "; ".join(
+                            step.strip() for step in process.unhappy_path if step.strip()
+                        )
+                    )
+
+            excerpt = spec_text.strip()
+            if len(excerpt) > 1200:
+                excerpt = excerpt[:1200].rstrip() + "\n..."
+
+            prompt_parts = [question_text]
+            if summary_lines:
+                prompt_parts.append("\n".join(summary_lines))
+            if excerpt:
+                prompt_parts.append(
+                    "Functional specification excerpt:\n" + excerpt
+                )
+            prompt_parts.append(
+                "Reply in 1-2 sentences confirming the target TO-BE vision. Highlight only critical adjustments if needed."
+            )
+            prompt = "\n\n".join(part for part in prompt_parts if part)
+
+            try:
+                comment = await responder.answer(prompt, transcript)
+            except Exception:  # pragma: no cover - fall back to default comment
+                logging.exception("Simulated TO-BE reviewer failed; using default acknowledgement.")
+                comment = "The future-state vision looks aligned with expectations."
+
+            stakeholder_comment = (
+                comment.strip()
+                or "The future-state vision looks aligned with expectations."
+            )
+            transcript.append((question_text, stakeholder_comment))
+            await _emit("message", role="user", content=stakeholder_comment)
+
+            return ToBeReviewResult(
+                items=items,
+                processes=processes,
+                stakeholder_comment=stakeholder_comment,
+            )
+
+    # Replace interactive reviewers with simulated stakeholder versions.
+    agent._as_is_reviewer = _SimulatedAsIsReviewer()  # type: ignore[attr-defined]
+    agent._to_be_reviewer = _SimulatedToBeReviewer()  # type: ignore[attr-defined]
+
+    await _emit("persona", persona=responder.persona)
 
     if verbose:
         print("Simulated stakeholder persona:\n")
@@ -342,23 +535,31 @@ async def simulate_interview(
 
     question = await agent.kickoff()
     agent.record_question(question)
+    await _emit("message", role="assistant", content=question)
     if verbose:
         print(f"BA Agent: {question}")
 
     while True:
         answer = await responder.answer(question, transcript)
         transcript.append((question, answer))
+        await _emit("message", role="user", content=answer)
         if verbose:
             print(f"Test Agent: {answer}\n")
         follow_up = await agent.next_question(answer)
         if follow_up is None:
             break
         agent.record_question(follow_up)
+        await _emit("message", role="assistant", content=follow_up)
         question = follow_up
         if verbose:
             print(f"BA Agent: {question}")
 
     review_warnings: List[str] = []
+
+    await _emit(
+        "status",
+        content="Generating functional specification draft...",
+    )
 
     async def _produce_reviewed_specification() -> str:
         nonlocal review_warnings
@@ -368,11 +569,16 @@ async def simulate_interview(
         spec_text_local = ""
         while True:
             spec_text_local = await agent.summarize()
+            await _emit("spec_draft", content=spec_text_local)
             if verbose:
                 print("\nFunctional specification draft:\n")
                 print(spec_text_local)
                 print()
             review = await agent.review_spec(spec_text_local)
+            await _emit(
+                "review_feedback",
+                content=review.feedback_for_interviewer,
+            )
             if verbose:
                 print(
                     f"Reviewer Agent: {review.feedback_for_interviewer}"
@@ -380,6 +586,7 @@ async def simulate_interview(
             if not review.requires_follow_up:
                 agent.clear_review_corrections()
                 final_spec = await agent.finalize_current_summary()
+                await _emit("spec_final", content=final_spec)
                 if verbose:
                     print()
                     print(
@@ -393,8 +600,16 @@ async def simulate_interview(
             if review.missing_subjects and verbose:
                 missing = ", ".join(review.missing_subjects)
                 print(f"Missing subjects flagged: {missing}")
+                await _emit(
+                    "review_warning",
+                    note=f"Missing subjects flagged: {missing}",
+                )
             if (not review.table_valid) and review.table_feedback and verbose:
                 print(f"Table guidance: {review.table_feedback}")
+                await _emit(
+                    "review_warning",
+                    note=review.table_feedback,
+                )
 
             review_signature = review.fingerprint()
             if review_signature in seen_signatures:
@@ -404,6 +619,8 @@ async def simulate_interview(
                         "Stopping automatic retries to avoid a loop."
                     )
                 review_warnings = review.outstanding_items()
+                for note in review_warnings:
+                    await _emit("review_warning", note=note)
                 break
             seen_signatures.add(review_signature)
 
@@ -414,9 +631,15 @@ async def simulate_interview(
                         f"({settings.review_max_passes})."
                     )
                 review_warnings = review.outstanding_items()
+                for note in review_warnings:
+                    await _emit("review_warning", note=note)
                 break
 
             attempt_count += 1
+            await _emit(
+                "status",
+                content="Reviewer requested additional details...",
+            )
             agent.apply_review_feedback(review)
             follow_ups = review.follow_up_questions or []
             if not follow_ups:
@@ -435,6 +658,9 @@ async def simulate_interview(
                     print(f"BA Agent: {follow_up.question}")
                     if follow_up.reason:
                         print(f"  (Reviewer note: {follow_up.reason})")
+                await _emit("message", role="assistant", content=follow_up.question)
+                if follow_up.reason:
+                    await _emit("review_note", note=follow_up.reason)
                 follow_answer = await responder.answer(
                     follow_up.question,
                     transcript,
@@ -445,6 +671,7 @@ async def simulate_interview(
                     subject_name=follow_up.subject or "",
                 )
                 transcript.append((follow_up.question, follow_answer))
+                await _emit("message", role="user", content=follow_answer)
                 if verbose:
                     print(f"Test Agent: {follow_answer}\n")
             if verbose:
@@ -452,6 +679,10 @@ async def simulate_interview(
                     "BA Agent: Additional details captured. Regenerating "
                     "the specification..."
                 )
+            await _emit(
+                "status",
+                content="Additional details captured. Regenerating the specification...",
+            )
 
         if review_warnings and verbose:
             print()
@@ -462,18 +693,32 @@ async def simulate_interview(
             for note in review_warnings:
                 print(f"  - {note}")
             print()
+        for note in review_warnings:
+            await _emit("review_warning", note=note)
 
         final_spec = await agent.finalize_current_summary()
+        await _emit("spec_final", content=final_spec)
         return final_spec
 
     spec_text = await _produce_reviewed_specification()
+
+    await _emit("message", role="assistant", content=CLOSING_PROMPT)
+    await _emit(
+        "status",
+        content="Awaiting stakeholder closing feedback...",
+    )
 
     closing_answer = await responder.closing_feedback(
         spec_text=spec_text,
         conversation=transcript,
     )
     agent.record_question(CLOSING_PROMPT, answer=closing_answer)
+    await _emit("message", role="user", content=closing_answer)
     if closing_answer.strip().lower() not in NEGATIVE_FEEDBACK_RESPONSES:
+        await _emit(
+            "status",
+            content="Stakeholder approved summary. Refreshing specification...",
+        )
         spec_text = await _produce_reviewed_specification()
     spec_artifacts = agent.export_spec(spec_text)
     spec_path = spec_artifacts.markdown_path
@@ -481,6 +726,24 @@ async def simulate_interview(
         spec_text=spec_text,
         spec_path=spec_path,
     )
+    await _emit(
+        "artifact",
+        kind="spec_markdown",
+        path=str(spec_path),
+    )
+    if spec_artifacts.pdf_path is not None:
+        await _emit(
+            "artifact",
+            kind="spec_pdf",
+            path=str(spec_artifacts.pdf_path),
+        )
+    if record_id:
+        await _emit(
+            "artifact",
+            kind="transcript_record",
+            record_id=str(record_id),
+        )
+    await _emit("status", content="Simulation complete.")
 
     if verbose:
         print(f"BA Agent: {CLOSING_PROMPT}")

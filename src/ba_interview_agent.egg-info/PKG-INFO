@@ -7,11 +7,14 @@ Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 Requires-Dist: agent-framework>=1.0.0b251028
 Requires-Dist: agent-framework-devui>=1.0.0b251028
+Requires-Dist: agent-framework-ag-ui>=1.0.0b251028
 Requires-Dist: packaging>=23.0
 Requires-Dist: redis>=5.0.0
 Requires-Dist: python-dotenv>=1.0.0
 Requires-Dist: rich>=13.7.0
-Requires-Dist: pypdf>=4.0.0
+Requires-Dist: fpdf2>=2.7.8
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
@@ -25,12 +28,15 @@ This project implements an interviewing AI agent using the Microsoft Agent Frame
 - Guided interview experience tailored to the selected scope type.
 - Dynamic questioning that leverages an LLM and conversation memory.
 - Functional specification synthesis that highlights objectives, stakeholders, assumptions, requirements, and open issues.
+- Deterministic specification output with numbered sections for scope, current state (AS-IS), personas, and requirements.
+- Reference-numbered specification table capturing business rules and data dependencies.
+- Automated reviewer agent that validates subject coverage and requirement table quality before finalizing the draft.
 - Command line interface suitable for demos or quick feedback loops.
 - Built-in transcript archive that writes JSONL logs, mirrors sessions into Redis, and ships with search/report utilities.
 - Agenda-driven questioning that walks through nine core business-analysis subjects,
   with a configurable per-subject question cap and automatic wrap-up once everything
   is covered.
-- Automated PDF-driven test agent to perform repeatable simulation runs.
+- LLM-driven stakeholder simulator to perform repeatable interview runs.
 
 ## Getting Started
 
@@ -65,6 +71,7 @@ cp .env.example .env
 | `MAF_TRANSCRIPT_JSONL` | Optional path to the JSONL transcript archive (default: `./outputs/transcripts.jsonl`). |
 | `MAF_REDIS_URL` | Optional Redis connection string for transcript storage (default: `redis://localhost:6379/0`). |
 | `MAF_SUBJECT_MAX_QUESTIONS` | Maximum number of questions to ask per subject before moving on (default: `3`). |
+| `MAF_REVIEW_MAX_PASSES` | Maximum number of automated reviewer retries before surfacing unresolved items (default: `3`). |
 
 > **Note:** The legacy `MAF_TRANSCRIPT_DB` variable is still honored and treated as the JSONL
 > archive path. Make sure a Redis instance is reachable at the configured URL (for local
@@ -109,17 +116,28 @@ python -m ba_interview_agent transcripts report --scope project
 The transcript tooling pulls from Redis when available and falls back to the JSONL archive. Use it to validate saved sessions, troubleshoot Redis entries, or capture quick activity summaries.
 Transcript entries now include a `subject` field so you can search questions by the agenda topic when exploring historical interviews.
 
-### 7. Simulate interviews with PDFs (optional)
+### 7. Simulate interviews with stakeholder personas (optional)
 
-Kick off automated runs that answer questions using functional specification PDFs:
+Kick off automated runs that answer questions using an LLM-generated stakeholder:
 
 ```bash
-python -m ba_interview_agent simulate --fsd-path ./fsd --count 3
+python -m ba_interview_agent simulate --count 3 --seed 42
 ```
 
-Place the PDFs under the `fsd` directory (override with `--fsd-path`) or provide a
-single document via `--pdf`. Use `--quiet` to suppress per-question logs when running
-batch simulations.
+Each simulation spins up a fresh persona tailored to the selected scope. Provide
+`--persona-file persona.json` to pin the persona details or `--quiet` to suppress
+per-question logs when running batch simulations.
+
+### Automated specification review
+
+Every time the functional specification is generated, a reviewer agent checks that all
+agenda subjects are represented and that the "Functional Requirements" table follows
+the required format (Spec ID | Specification Description | Business Rules/Data
+Dependency with sequential FR-1, FR-2, … identifiers). If anything is missing, the CLI
+and simulator prompt for additional answers before regenerating the draft. To prevent
+infinite loops, reviewer retries are capped by `MAF_REVIEW_MAX_PASSES`; once the limit is
+reached (or the reviewer repeats the same request), any outstanding items are surfaced so
+you can address them manually.
 
 ## Project Structure
 
