@@ -1,3 +1,5 @@
+import type { InterviewScope } from "../config";
+
 export type AgentRole = "user" | "assistant" | "system" | "tool";
 
 export interface AgentMessage {
@@ -35,6 +37,50 @@ export interface TestAgentResult {
   recordId: string | null;
   specPath: string | null;
   pdfPath: string | null;
+}
+
+export interface SpecDiagramAsset {
+  path: string;
+  svg?: string;
+}
+
+export interface SpecPreview {
+  markdown: string;
+  markdownPath: string | null;
+  pdfPath: string | null;
+  diagrams: SpecDiagramAsset[];
+}
+
+export interface TranscriptMessage {
+  id: string;
+  role: AgentRole;
+  content: string;
+}
+
+export interface SpecFeedbackEntry {
+  feedbackId: string;
+  sessionId: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface SessionSummary {
+  id: string;
+  scope: InterviewScope;
+  createdAt: string;
+  turnCount: number;
+  specAvailable: boolean;
+  pdfAvailable: boolean;
+  feedbackCount: number;
+}
+
+export interface SessionDetail {
+  id: string;
+  scope: InterviewScope;
+  createdAt: string;
+  spec: SpecPreview;
+  transcript: TranscriptMessage[];
+  feedback: SpecFeedbackEntry[];
 }
 
 export type TestAgentStreamEvent =
@@ -159,6 +205,38 @@ function normalizePersona(raw: Record<string, unknown> | unknown): TestAgentPers
     preferences: toStringArray(personaRaw.preferences),
     tone: String(personaRaw.tone ?? "").trim(),
   };
+}
+
+function normalizeSpecPreviewPayload(data: Record<string, unknown>): SpecPreview {
+  const diagramsRaw = Array.isArray(data.diagrams) ? (data.diagrams as unknown[]) : [];
+  const diagrams = diagramsRaw.reduce<SpecDiagramAsset[]>((acc, entry) => {
+    if (!entry || typeof entry !== "object") {
+      return acc;
+    }
+    const record = entry as Record<string, unknown>;
+    const path = String(record.path ?? "").trim();
+    if (!path) {
+      return acc;
+    }
+    const svg = typeof record.svg === "string" ? record.svg : undefined;
+    acc.push({ path, svg });
+    return acc;
+  }, []);
+
+  return {
+    markdown: String(data.markdown ?? ""),
+    markdownPath: data.markdown_path == null ? null : String(data.markdown_path),
+    pdfPath: data.pdf_path == null ? null : String(data.pdf_path),
+    diagrams,
+  };
+}
+
+function normalizeScopeValue(value: unknown, fallback: InterviewScope): InterviewScope {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "project" || normalized === "process" || normalized === "change_request") {
+    return normalized as InterviewScope;
+  }
+  return fallback;
 }
 
 function normalizeTestAgentResult(payload: Record<string, unknown>): TestAgentResult {
@@ -400,7 +478,11 @@ export class AguiSessionClient {
   private threadId = generateId("thread");
   private runCounter = 0;
 
-  constructor(private readonly baseUrl: string, private readonly scope: string) {}
+  constructor(private readonly baseUrl: string, private readonly scope: InterviewScope) {}
+
+  getThreadId(): string {
+    return this.threadId;
+  }
 
   stream(messages: AgentMessage[], options: StreamOptions = {}): StreamResult {
     const controller = new AbortController();
@@ -427,7 +509,7 @@ export class AguiSessionClient {
 
     const endpoint = `${this.baseUrl}/${this.scope}`;
 
-    const events = (async function* (signal: AbortSignal): AsyncGenerator<AgentEvent, void, void> {
+    const events = (async function* (this: AguiSessionClient, signal: AbortSignal): AsyncGenerator<AgentEvent, void, void> {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -502,7 +584,7 @@ export class AguiSessionClient {
     const controller = new AbortController();
     const endpoint = `${this.baseUrl}/test-agent/${this.scope}/stream`;
 
-    const events = (async function* (signal: AbortSignal): AsyncGenerator<TestAgentStreamEvent, void, void> {
+    const events = (async function* (this: AguiSessionClient, signal: AbortSignal): AsyncGenerator<TestAgentStreamEvent, void, void> {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -538,6 +620,172 @@ export class AguiSessionClient {
     return {
       events,
       abort: () => controller.abort(),
+    };
+  }
+
+  async fetchSpecPreview(threadId: string, refresh = false): Promise<SpecPreview> {
+    const response = await fetch(`${this.baseUrl}/spec/${this.scope}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        thread_id: threadId,
+        refresh,
+      }),
+    });
+
+    const rawPayload = await response.text();
+
+    if (!response.ok) {
+      const message = parseErrorMessage(
+        response.status,
+        rawPayload,
+        `Unable to generate functional specification (${response.status})`,
+      );
+      throw new Error(message);
+    }
+
+    let data: Record<string, unknown> = {};
+    if (rawPayload) {
+      try {
+        const parsed = JSON.parse(rawPayload);
+        if (parsed && typeof parsed === "object") {
+          data = parsed as Record<string, unknown>;
+        }
+      } catch (error) {
+        console.warn("Failed to parse spec preview payload", error);
+      }
+    }
+
+    return normalizeSpecPreviewPayload(data);
+  }
+
+  buildSpecPdfUrl(threadId: string): string {
+    const search = new URLSearchParams({ thread_id: threadId, t: Date.now().toString() });
+    return `${this.baseUrl}/spec/${this.scope}/pdf?${search.toString()}`;
+  }
+
+  async listSessions(limit = 10): Promise<SessionSummary[]> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    params.set("scope", this.scope);
+    const response = await fetch(`${this.baseUrl}/sessions?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`Unable to list sessions (${response.status})`);
+    }
+    const payload = await response.json();
+    if (!Array.isArray(payload)) {
+      return [];
+    }
+    return payload.map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        id: String(record.id ?? ""),
+        scope: normalizeScopeValue(record.scope, this.scope),
+        createdAt: String(record.created_at ?? ""),
+        turnCount: Number(record.turn_count ?? 0),
+        specAvailable: Boolean(record.spec_available),
+        pdfAvailable: Boolean(record.pdf_available),
+        feedbackCount: Number(record.feedback_count ?? 0),
+      };
+    }).filter((summary) => summary.id.length > 0);
+  }
+
+  async getSessionDetail(sessionId: string): Promise<SessionDetail> {
+    const response = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`);
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(parseErrorMessage(response.status, message, `Session lookup failed (${response.status})`));
+    }
+    const data = await response.json();
+    const specData = typeof data.spec === "object" && data.spec ? (data.spec as Record<string, unknown>) : {};
+    const transcriptRaw = Array.isArray(data.transcript) ? (data.transcript as unknown[]) : [];
+    const feedbackRaw = Array.isArray(data.feedback) ? (data.feedback as unknown[]) : [];
+
+    const transcript: TranscriptMessage[] = transcriptRaw
+      .map((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+        const record = entry as Record<string, unknown>;
+        const role = String(record.role ?? "assistant") as AgentRole;
+        const content = String(record.content ?? "").trim();
+        if (!content) {
+          return null;
+        }
+        return {
+          id: `history_${sessionId}_${index}`,
+          role,
+          content,
+        };
+      })
+      .filter((item): item is TranscriptMessage => Boolean(item));
+
+    const feedback: SpecFeedbackEntry[] = feedbackRaw
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+        const record = entry as Record<string, unknown>;
+        const feedbackId = String(record.feedback_id ?? "").trim();
+        const message = String(record.message ?? "").trim();
+        if (!feedbackId || !message) {
+          return null;
+        }
+        return {
+          feedbackId,
+          sessionId: String(record.session_id ?? sessionId),
+          message,
+          createdAt: String(record.created_at ?? ""),
+        };
+      })
+      .filter((item): item is SpecFeedbackEntry => Boolean(item));
+
+    return {
+      id: String(data.id ?? sessionId),
+      scope: normalizeScopeValue(data.scope, this.scope),
+      createdAt: String(data.created_at ?? ""),
+      spec: normalizeSpecPreviewPayload(specData),
+      transcript,
+      feedback,
+    };
+  }
+
+  async submitSpecFeedback(sessionId: string, message: string): Promise<SpecFeedbackEntry> {
+    const response = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/feedback`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message }),
+    });
+
+    const raw = await response.text();
+
+    if (!response.ok) {
+      throw new Error(parseErrorMessage(response.status, raw, `Unable to submit feedback (${response.status})`));
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const record = parsed as Record<string, unknown>;
+        return {
+          feedbackId: String(record.feedback_id ?? ""),
+          sessionId: String(record.session_id ?? sessionId),
+          message: String(record.message ?? ""),
+          createdAt: String(record.created_at ?? ""),
+        };
+      }
+    } catch (error) {
+      console.warn("Failed to parse feedback response", error);
+    }
+
+    return {
+      feedbackId: `${sessionId}-${Date.now()}`,
+      sessionId,
+      message,
+      createdAt: new Date().toISOString(),
     };
   }
 }

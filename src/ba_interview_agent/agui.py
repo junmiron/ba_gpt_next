@@ -7,11 +7,111 @@ import asyncio
 import logging
 import os
 import json
+import re
 from contextlib import suppress
 from dataclasses import asdict, is_dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Dict, Iterable, Mapping, Optional, Sequence
+from typing import Any, AsyncIterator, Dict, Iterable, Mapping, Optional, Sequence, List, Literal
+from uuid import uuid4
 from weakref import WeakKeyDictionary
+
+from pydantic import BaseModel
+
+
+class TestAgentRequest(BaseModel):
+    seed: Optional[int] = None
+    persona: Optional[Dict[str, Any]] = None
+
+
+class SpecPreviewRequest(BaseModel):
+    thread_id: str
+    refresh: bool = False
+
+
+class SpecDiagramAsset(BaseModel):
+    path: str
+    svg: Optional[str] = None
+
+
+class SpecPreviewResponse(BaseModel):
+    markdown: str
+    markdown_path: Optional[str]
+    pdf_path: Optional[str]
+    diagrams: List[SpecDiagramAsset]
+
+
+class SessionSummary(BaseModel):
+    id: str
+    scope: InterviewScope
+    created_at: datetime
+    turn_count: int
+    spec_available: bool
+    pdf_available: bool
+    feedback_count: int
+
+
+class TranscriptMessage(BaseModel):
+    role: Literal["assistant", "user", "system"]
+    content: str
+
+
+class SpecFeedbackEntry(BaseModel):
+    feedback_id: str
+    session_id: str
+    message: str
+    created_at: datetime
+
+
+class SpecFeedbackRequest(BaseModel):
+    message: str
+
+
+class SessionDetailResponse(BaseModel):
+    id: str
+    scope: InterviewScope
+    created_at: datetime
+    spec: SpecPreviewResponse
+    transcript: List[TranscriptMessage]
+    feedback: List[SpecFeedbackEntry]
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [segment.strip() for segment in value.split("\n") if segment.strip()]
+    return []
+
+
+def _normalize_persona(persona: object) -> Dict[str, object]:
+    if is_dataclass(persona):
+        raw = asdict(persona)
+    elif isinstance(persona, Mapping):
+        raw = dict(persona)
+    else:
+        raw = {
+            "project_name": getattr(persona, "project_name", ""),
+            "company": getattr(persona, "company", ""),
+            "stakeholder_role": getattr(persona, "stakeholder_role", ""),
+            "context": getattr(persona, "context", ""),
+            "goals": getattr(persona, "goals", []),
+            "risks": getattr(persona, "risks", []),
+            "preferences": getattr(persona, "preferences", []),
+            "tone": getattr(persona, "tone", ""),
+        }
+
+    return {
+        "project_name": str(raw.get("project_name", "")).strip(),
+        "company": str(raw.get("company", "")).strip(),
+        "stakeholder_role": str(raw.get("stakeholder_role", "")).strip(),
+        "context": str(raw.get("context", "")).strip(),
+        "goals": _coerce_string_list(raw.get("goals")),
+        "risks": _coerce_string_list(raw.get("risks")),
+        "preferences": _coerce_string_list(raw.get("preferences")),
+        "tone": str(raw.get("tone", "")).strip(),
+    }
 
 from agent_framework import (
     AgentRunResponse,
@@ -25,10 +125,11 @@ from agent_framework.ag_ui import add_agent_framework_fastapi_endpoint
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from pydantic import BaseModel
 from starlette.responses import StreamingResponse
+from fastapi.responses import FileResponse
 
 from .config import AppSettings, InterviewScope
+from .transcript_archive import TranscriptArchive
 from .sessions import BusinessAnalystSession
 from .test_agent import SimulatedStakeholderResponder, simulate_interview
 
@@ -57,6 +158,12 @@ class BusinessAnalystAGUIAgent:
         self._sessions: WeakKeyDictionary[AgentThread, BusinessAnalystSession] = (
             WeakKeyDictionary()
         )
+        self._thread_keys: WeakKeyDictionary[AgentThread, list[str]] = (
+            WeakKeyDictionary()
+        )
+        self._session_lookup: dict[str, BusinessAnalystSession] = {}
+        self._retained_session_keys: list[str] = []
+        self._retained_session_limit = 8
         # Minimal surfaces expected by AgentFrameworkAgent orchestrators
         self.chat_options = SimpleNamespace(tools=None, response_format=None)
         self.chat_client = SimpleNamespace(
@@ -116,8 +223,11 @@ class BusinessAnalystAGUIAgent:
             await self._append_assistant_message(thread, kickoff)
             yield self._as_update(kickoff)
             self._sessions[thread] = session_state
+            self._register_session(thread, session_state)
             if not user_text:
                 return
+        else:
+            self._register_session(thread, session_state)
 
         if not user_text:
             return
@@ -131,6 +241,7 @@ class BusinessAnalystAGUIAgent:
 
         if session_state.completed:
             self._sessions.pop(thread, None)
+            self._unregister_session(thread, keep_lookup=True)
 
     async def _append_user_message(
         self,
@@ -230,47 +341,78 @@ class BusinessAnalystAGUIAgent:
 
         return ""
 
+    def _compute_thread_keys(self, thread: AgentThread) -> list[str]:
+        keys: list[str] = []
+        for attr in ("id", "thread_id", "threadId", "identifier"):
+            value = getattr(thread, attr, None)
+            if isinstance(value, str) and value.strip():
+                keys.append(value.strip())
+        keys.append(str(id(thread)))
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for key in keys:
+            if key not in seen:
+                seen.add(key)
+                normalized.append(key)
+        return normalized
 
-class TestAgentRequest(BaseModel):
-    seed: Optional[int] = None
-    persona: Optional[Dict[str, Any]] = None
+    def _register_session(
+        self,
+        thread: AgentThread,
+        session: BusinessAnalystSession,
+    ) -> None:
+        keys = self._compute_thread_keys(thread)
+        if not keys:
+            return
+        self._thread_keys[thread] = keys
+        for key in keys:
+            self._session_lookup[key] = session
+            if key in self._retained_session_keys:
+                self._retained_session_keys.remove(key)
+        logging.debug(
+            "Registered session for scope=%s thread_keys=%s",
+            self._scope.value,
+            keys,
+        )
 
+    def _unregister_session(
+        self,
+        thread: AgentThread,
+        *,
+        keep_lookup: bool = False,
+    ) -> None:
+        keys = self._thread_keys.pop(thread, [])
+        if keep_lookup:
+            for key in keys:
+                if key not in self._retained_session_keys:
+                    self._retained_session_keys.append(key)
+            self._trim_retained_sessions()
+            return
 
-def _coerce_string_list(value: object) -> list[str]:
-    if isinstance(value, (list, tuple, set)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        return [segment.strip() for segment in value.split("\n") if segment.strip()]
-    return []
+        for key in keys:
+            existing = self._session_lookup.get(key)
+            if existing is not None and existing in self._sessions.values():
+                continue
+            self._session_lookup.pop(key, None)
+            try:
+                self._retained_session_keys.remove(key)
+            except ValueError:
+                pass
 
+    def get_session_by_id(
+        self,
+        thread_identifier: str,
+    ) -> Optional[BusinessAnalystSession]:
+        return self._session_lookup.get(thread_identifier)
 
-def _normalize_persona(persona: object) -> Dict[str, object]:
-    if is_dataclass(persona):
-        raw = asdict(persona)
-    elif isinstance(persona, Mapping):
-        raw = dict(persona)
-    else:
-        raw = {
-            "project_name": getattr(persona, "project_name", ""),
-            "company": getattr(persona, "company", ""),
-            "stakeholder_role": getattr(persona, "stakeholder_role", ""),
-            "context": getattr(persona, "context", ""),
-            "goals": getattr(persona, "goals", []),
-            "risks": getattr(persona, "risks", []),
-            "preferences": getattr(persona, "preferences", []),
-            "tone": getattr(persona, "tone", ""),
-        }
-
-    return {
-        "project_name": str(raw.get("project_name", "")).strip(),
-        "company": str(raw.get("company", "")).strip(),
-        "stakeholder_role": str(raw.get("stakeholder_role", "")).strip(),
-        "context": str(raw.get("context", "")).strip(),
-        "goals": _coerce_string_list(raw.get("goals")),
-        "risks": _coerce_string_list(raw.get("risks")),
-        "preferences": _coerce_string_list(raw.get("preferences")),
-        "tone": str(raw.get("tone", "")).strip(),
-    }
+    def _trim_retained_sessions(self) -> None:
+        while len(self._retained_session_keys) > self._retained_session_limit:
+            oldest = self._retained_session_keys.pop(0)
+            session = self._session_lookup.get(oldest)
+            if session is not None and session in self._sessions.values():
+                self._retained_session_keys.append(oldest)
+                continue
+            self._session_lookup.pop(oldest, None)
 
 
 def _build_response_from_simulation(persona: object, result: Dict[str, Any]) -> Dict[str, object]:
@@ -332,8 +474,14 @@ def create_app(
     )
 
     target_scopes = list(scopes) if scopes else list(InterviewScope)
+    output_root = settings.output_dir.resolve()
+    archive = TranscriptArchive(settings)
+    feedback_log = output_root / "spec_feedback.jsonl"
+    feedback_log.parent.mkdir(parents=True, exist_ok=True)
+    agent_registry: Dict[str, BusinessAnalystAGUIAgent] = {}
     for scope in target_scopes:
         agent = BusinessAnalystAGUIAgent(settings=settings, scope=scope)
+        agent_registry[scope.value] = agent
         add_agent_framework_fastapi_endpoint(
             app=app,
             agent=agent,
@@ -366,6 +514,12 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    def _get_agent(scope: InterviewScope) -> BusinessAnalystAGUIAgent:
+        agent = agent_registry.get(scope.value)
+        if agent is None:
+            raise HTTPException(status_code=500, detail="Agent not registered for this scope.")
+        return agent
+
     def _runtime_settings_for_request() -> AppSettings:
         if test_agent_profile == "full":
             return settings
@@ -384,6 +538,157 @@ def create_app(
                     " to 'live' to enable it."
                 ),
             )
+
+    def _parse_scope_param(value: Optional[str]) -> Optional[InterviewScope]:
+        if value is None:
+            return None
+        try:
+            return InterviewScope.from_string(value, default=None)
+        except ValueError as exc:  # pragma: no cover - validation guard
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _relative_to_output(path: Optional[Path]) -> Optional[str]:
+        if path is None:
+            return None
+        try:
+            return str(path.relative_to(output_root))
+        except ValueError:
+            return str(path)
+
+    def _parse_feedback_timestamp(raw_value: object) -> datetime:
+        if not isinstance(raw_value, str):
+            return datetime.now(timezone.utc)
+        cleaned = raw_value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _load_feedback_entries(session_id: Optional[str] = None) -> List[SpecFeedbackEntry]:
+        if not feedback_log.exists():
+            return []
+        entries: List[SpecFeedbackEntry] = []
+        with feedback_log.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                text = raw_line.strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                payload_session = str(payload.get("session_id", ""))
+                if session_id and payload_session != session_id:
+                    continue
+                message = str(payload.get("message", "")).strip()
+                if not message:
+                    continue
+                created_at = _parse_feedback_timestamp(payload.get("created_at"))
+                feedback_id = str(payload.get("feedback_id") or uuid4().hex)
+                entry = SpecFeedbackEntry(
+                    feedback_id=feedback_id,
+                    session_id=payload_session,
+                    message=message,
+                    created_at=created_at,
+                )
+                entries.append(entry)
+        entries.sort(key=lambda item: item.created_at)
+        return entries
+
+    def _append_feedback_entry(session_id: str, message: str) -> SpecFeedbackEntry:
+        feedback_id = uuid4().hex
+        timestamp = datetime.now(timezone.utc)
+        record = {
+            "feedback_id": feedback_id,
+            "session_id": session_id,
+            "message": message,
+            "created_at": timestamp.isoformat(),
+        }
+        with feedback_log.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return SpecFeedbackEntry(
+            feedback_id=feedback_id,
+            session_id=session_id,
+            message=message,
+            created_at=timestamp,
+        )
+
+    image_pattern = re.compile(r"!\[[^\]]*\]\((?P<path>[^)]+)\)")
+
+    def _collect_svg_assets(
+        markdown_text: str,
+        markdown_path: Optional[Path],
+    ) -> List[SpecDiagramAsset]:
+        assets: List[SpecDiagramAsset] = []
+        if not markdown_text:
+            return assets
+        base_dir = markdown_path.parent if markdown_path else output_root
+        seen: set[str] = set()
+        for match in image_pattern.finditer(markdown_text):
+            raw_path = match.group("path").strip()
+            if not raw_path:
+                continue
+            normalized = raw_path.replace("\\", "/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = (base_dir / raw_path).resolve()
+            else:
+                candidate = candidate.resolve()
+            try:
+                candidate.relative_to(output_root)
+            except ValueError:
+                continue
+            if candidate.suffix.lower() != ".svg":
+                continue
+            if not candidate.exists():
+                continue
+            try:
+                svg_text = candidate.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            assets.append(SpecDiagramAsset(path=normalized, svg=svg_text))
+        return assets
+
+    def _load_latest_spec_from_disk(
+        scope: Optional[InterviewScope] = None,
+    ) -> Optional[tuple[str, SimpleNamespace, InterviewScope]]:
+        patterns: list[tuple[InterviewScope, str]]
+        if scope is not None:
+            patterns = [(scope, f"functional_spec_{scope.value}_*.md")]
+        else:
+            patterns = [
+                (candidate_scope, f"functional_spec_{candidate_scope.value}_*.md")
+                for candidate_scope in InterviewScope
+            ]
+
+        entries: list[tuple[float, Path, InterviewScope]] = []
+        for pattern_scope, pattern in patterns:
+            for candidate in output_root.glob(pattern):
+                try:
+                    mtime = candidate.stat().st_mtime
+                except OSError:
+                    continue
+                entries.append((mtime, candidate, pattern_scope))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for _, candidate, resolved_scope in entries:
+            try:
+                spec_text = candidate.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            pdf_candidate = candidate.with_suffix(".pdf")
+            pdf_path = pdf_candidate if pdf_candidate.exists() else None
+            artifacts = SimpleNamespace(
+                markdown_path=candidate,
+                pdf_path=pdf_path,
+            )
+            return spec_text, artifacts, resolved_scope
+        return None
 
     @app.post("/test-agent/{scope_name}")
     async def run_test_agent(scope_name: str, payload: TestAgentRequest) -> Dict[str, object]:
@@ -593,6 +898,211 @@ def create_app(
 
         headers = {"Cache-Control": "no-cache"}
         return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+    @app.get("/sessions", response_model=List[SessionSummary])
+    async def list_sessions(scope: Optional[str] = None, limit: int = 10) -> List[SessionSummary]:
+        resolved_scope = _parse_scope_param(scope)
+        bounded_limit = max(1, min(limit, 50))
+        records = archive.list(limit=bounded_limit, scope=resolved_scope)
+        feedback_index: Dict[str, int] = {}
+        for entry in _load_feedback_entries(None):
+            feedback_index[entry.session_id] = feedback_index.get(entry.session_id, 0) + 1
+        summaries: List[SessionSummary] = []
+        for record in records:
+            markdown_path = record.spec_path if record.spec_path and record.spec_path.exists() else None
+            pdf_path = None
+            if markdown_path is not None:
+                candidate_pdf = markdown_path.with_suffix(".pdf")
+                if candidate_pdf.exists():
+                    pdf_path = candidate_pdf
+            has_spec = bool(record.spec_text) or markdown_path is not None
+            has_pdf = pdf_path is not None
+            summaries.append(
+                SessionSummary(
+                    id=record.id,
+                    scope=record.scope,
+                    created_at=record.created_at,
+                    turn_count=record.turn_count,
+                    spec_available=has_spec,
+                    pdf_available=has_pdf,
+                    feedback_count=feedback_index.get(record.id, 0),
+                )
+            )
+        return summaries
+
+    @app.get("/sessions/{session_id}", response_model=SessionDetailResponse)
+    async def get_session_detail(session_id: str) -> SessionDetailResponse:
+        record = archive.get(session_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+
+        markdown_path = record.spec_path if record.spec_path and record.spec_path.exists() else None
+        markdown_text = record.spec_text or ""
+        if not markdown_text and markdown_path is not None:
+            try:
+                markdown_text = markdown_path.read_text(encoding="utf-8")
+            except OSError:
+                markdown_text = ""
+
+        diagrams = _collect_svg_assets(markdown_text, markdown_path)
+
+        pdf_path = None
+        if markdown_path is not None:
+            candidate_pdf = markdown_path.with_suffix(".pdf")
+            if candidate_pdf.exists():
+                pdf_path = candidate_pdf
+
+        spec_payload = SpecPreviewResponse(
+            markdown=markdown_text,
+            markdown_path=_relative_to_output(markdown_path),
+            pdf_path=_relative_to_output(pdf_path),
+            diagrams=diagrams,
+        )
+
+        transcript_messages: List[TranscriptMessage] = []
+        if record.initial_prompt:
+            transcript_messages.append(
+                TranscriptMessage(role="user", content=record.initial_prompt)
+            )
+        for question, answer in record.turns:
+            question_text = question.strip()
+            if question_text:
+                transcript_messages.append(
+                    TranscriptMessage(role="assistant", content=question_text)
+                )
+            answer_text = answer.strip()
+            if answer_text:
+                transcript_messages.append(
+                    TranscriptMessage(role="user", content=answer_text)
+                )
+
+        feedback_entries = _load_feedback_entries(record.id)
+
+        return SessionDetailResponse(
+            id=record.id,
+            scope=record.scope,
+            created_at=record.created_at,
+            spec=spec_payload,
+            transcript=transcript_messages,
+            feedback=feedback_entries,
+        )
+
+    @app.post("/sessions/{session_id}/feedback", response_model=SpecFeedbackEntry, status_code=201)
+    async def submit_spec_feedback(session_id: str, payload: SpecFeedbackRequest) -> SpecFeedbackEntry:
+        message = payload.message.strip()
+        if not message:
+            raise HTTPException(status_code=400, detail="Feedback message cannot be empty.")
+        record = archive.get(session_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        entry = _append_feedback_entry(session_id, message)
+        return entry
+
+    @app.post("/spec/{scope_name}", response_model=SpecPreviewResponse)
+    async def generate_spec_preview(scope_name: str, payload: SpecPreviewRequest) -> SpecPreviewResponse:
+        scope = _resolve_scope(scope_name)
+        agent = _get_agent(scope)
+        thread_id = payload.thread_id.strip()
+        if not thread_id:
+            raise HTTPException(status_code=400, detail="thread_id is required.")
+
+        session = agent.get_session_by_id(thread_id)
+        if session is None:
+            logging.info(
+                "Spec preview using disk fallback (scope=%s thread=%s)",
+                scope.value,
+                thread_id,
+            )
+            fallback = _load_latest_spec_from_disk(scope) or _load_latest_spec_from_disk()
+            if fallback is None:
+                logging.debug(
+                    "No disk artifacts available for scope=%s; known threads=%s",
+                    scope.value,
+                    list(agent._session_lookup.keys()),
+                )
+                raise HTTPException(
+                    status_code=404,
+                    detail="Active session not found for the requested thread.",
+                )
+            spec_text, artifacts, resolved_scope = fallback
+            if resolved_scope != scope:
+                logging.info(
+                    "Serving specification from scope=%s for request scope=%s",
+                    resolved_scope.value,
+                    scope.value,
+                )
+        else:
+            try:
+                spec_text, artifacts = await session.generate_spec_preview(
+                    force_refresh=payload.refresh,
+                )
+            except Exception as exc:  # pragma: no cover - defensive guard
+                logging.exception("Failed to generate specification preview")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Unable to generate specification preview: {exc}",
+                ) from exc
+
+        diagrams = _collect_svg_assets(spec_text, artifacts.markdown_path)
+
+        return SpecPreviewResponse(
+            markdown=spec_text,
+            markdown_path=str(artifacts.markdown_path) if artifacts.markdown_path else None,
+            pdf_path=str(artifacts.pdf_path) if artifacts.pdf_path else None,
+            diagrams=diagrams,
+        )
+
+    @app.get("/spec/{scope_name}/pdf")
+    async def download_spec_pdf(scope_name: str, thread_id: str) -> FileResponse:
+        scope = _resolve_scope(scope_name)
+        agent = _get_agent(scope)
+        normalized_thread = thread_id.strip()
+        if not normalized_thread:
+            raise HTTPException(status_code=400, detail="thread_id query parameter is required.")
+
+        session = agent.get_session_by_id(normalized_thread)
+        if session is None:
+            logging.info(
+                "Spec PDF using disk fallback (scope=%s thread=%s)",
+                scope.value,
+                normalized_thread,
+            )
+            fallback = _load_latest_spec_from_disk(scope) or _load_latest_spec_from_disk()
+            if fallback is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Active session not found for the requested thread.",
+                )
+            _, artifacts, resolved_scope = fallback
+            if artifacts.pdf_path is None or not artifacts.pdf_path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Specification PDF is not available for this session.",
+                )
+            pdf_path = artifacts.pdf_path
+            if resolved_scope != scope:
+                logging.info(
+                    "Serving PDF from scope=%s for request scope=%s",
+                    resolved_scope.value,
+                    scope.value,
+                )
+        else:
+            pdf_path = session.last_spec_pdf_path
+            if pdf_path is None or not pdf_path.exists():
+                _, artifacts = await session.generate_spec_preview(force_refresh=True)
+                pdf_path = artifacts.pdf_path
+
+            if pdf_path is None or not pdf_path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Specification PDF is not available for this session.",
+                )
+
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf",
+            filename=pdf_path.name,
+        )
 
     @app.get("/health")
     async def health() -> dict[str, str]:  # pragma: no cover - simple health probe

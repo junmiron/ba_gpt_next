@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from .config import AppSettings, InterviewScope
@@ -11,6 +12,7 @@ from .interview_agent import (
     CLOSING_PROMPT,
     NEGATIVE_FEEDBACK_RESPONSES,
     TERMINATION_TOKENS,
+    SpecificationArtifacts,
 )
 
 
@@ -23,6 +25,9 @@ class BusinessAnalystSession:
     awaiting_closing_feedback: bool = False
     pending_spec_text: Optional[str] = None
     final_message: Optional[str] = None
+    last_spec_text: Optional[str] = None
+    last_spec_markdown_path: Optional[Path] = None
+    last_spec_pdf_path: Optional[Path] = None
 
     @classmethod
     def create(
@@ -63,6 +68,36 @@ class BusinessAnalystSession:
         self.agent.record_question(follow_up)
         updates.append(follow_up)
         return updates
+
+    async def generate_spec_preview(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> tuple[str, SpecificationArtifacts]:
+        """Produce (or reuse) the latest specification artifacts."""
+
+        reuse_available = (
+            not force_refresh
+            and self.last_spec_text is not None
+            and self.last_spec_markdown_path is not None
+            and self.last_spec_markdown_path.exists()
+        )
+        if reuse_available:
+            artifacts = SpecificationArtifacts(
+                markdown_path=self.last_spec_markdown_path,
+                pdf_path=self.last_spec_pdf_path,
+            )
+            return self.last_spec_text, artifacts
+
+        spec_text = await self.agent.summarize()
+        artifacts = self.agent.export_spec(spec_text)
+
+        self.pending_spec_text = spec_text
+        self.last_spec_text = spec_text
+        self.last_spec_markdown_path = artifacts.markdown_path
+        self.last_spec_pdf_path = artifacts.pdf_path
+
+        return spec_text, artifacts
 
     async def _finalize_session(self) -> str:
         if self.completed and self.final_message:
@@ -111,6 +146,9 @@ class BusinessAnalystSession:
             spec_text=final_spec,
             spec_path=output_path,
         )
+        self.last_spec_text = final_spec
+        self.last_spec_markdown_path = artifacts.markdown_path
+        self.last_spec_pdf_path = artifacts.pdf_path
         closing_lines = [
             "Interview complete. Functional specification saved to:",
             f" - {output_path}",

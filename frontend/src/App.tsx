@@ -7,10 +7,17 @@ import {
   type AgentMessage,
   type TestAgentPersona,
   type TestAgentResult,
+  type SpecPreview,
+  type SessionSummary,
+  type SessionDetail,
+  type SpecFeedbackEntry,
 } from "./services/session";
 import { ActionDrawer } from "./components/ActionDrawer";
 import { ChatPanel, type SessionStatus } from "./components/ChatPanel";
+import { SpecPanel } from "./components/SpecPanel";
+import { TranscriptPanel } from "./components/TranscriptPanel";
 import { Sidebar } from "./components/Sidebar";
+import { SessionHistoryBar } from "./components/SessionHistoryBar";
 
 function createMessageId(role: string) {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -79,11 +86,33 @@ export default function App() {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<SessionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"chat" | "spec" | "transcript">("chat");
+  const [specPreview, setSpecPreview] = useState<SpecPreview | null>(null);
+  const [showSpecDialog, setShowSpecDialog] = useState(false);
+  const [isSpecLoading, setIsSpecLoading] = useState(false);
+  const [sessionSummaries, setSessionSummaries] = useState<SessionSummary[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionDetail, setSelectedSessionDetail] = useState<SessionDetail | null>(null);
+  const [specSource, setSpecSource] = useState<"current" | "historical">("current");
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [isFeedbackSubmitting, setIsFeedbackSubmitting] = useState(false);
+  const [currentFeedbackEntries, setCurrentFeedbackEntries] = useState<SpecFeedbackEntry[]>([]);
 
   const sessionClient = useMemo(() => new AguiSessionClient(appConfig.apiBaseUrl, scope), [scope]);
 
   const messageRef = useRef<AgentMessage[]>(messages);
   const streamRef = useRef<{ abort: () => void; kind: "sse" | "test" } | null>(null);
+
+  useEffect(() => {
+    setViewMode("chat");
+    setSpecPreview(null);
+    setShowSpecDialog(false);
+    setSelectedSessionId(null);
+    setSelectedSessionDetail(null);
+    setSpecSource("current");
+    setCurrentFeedbackEntries([]);
+  }, [scope]);
 
   useEffect(() => {
     messageRef.current = messages;
@@ -101,6 +130,10 @@ export default function App() {
     switch (event.type) {
       case "RUN_STARTED":
         setStatus("streaming");
+        setSpecSource("current");
+        setSelectedSessionId(null);
+        setSelectedSessionDetail(null);
+        setCurrentFeedbackEntries([]);
         break;
       case "TEXT_MESSAGE_START":
         applyMessages((current) => {
@@ -164,6 +197,12 @@ export default function App() {
   }, [applyMessages]);
 
   useEffect(() => () => streamRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (status === "streaming") {
+      setViewMode("chat");
+    }
+  }, [status]);
 
   useEffect(() => {
     streamRef.current?.abort();
@@ -294,19 +333,174 @@ export default function App() {
   }, [applyMessages]);
 
   const handleRequestExport = useCallback(() => {
-    console.info("Export spec requested.");
+    if (status === "streaming") {
+      return;
+    }
+    setShowSpecDialog(true);
+  }, [status]);
+
+  const fetchSpecPreview = useCallback(
+    async (forceRefresh = false) => {
+      setIsSpecLoading(true);
+      try {
+        const threadId = sessionClient.getThreadId();
+        const preview = await sessionClient.fetchSpecPreview(threadId, forceRefresh);
+        setSpecPreview(preview);
+        setError(null);
+        setStatus((current) => (current === "error" ? "idle" : current));
+        return preview;
+      } catch (err) {
+        console.error("Specification preview failed", err);
+        const message = err instanceof Error ? err.message : "Unable to load the functional specification.";
+        setError(message);
+        setStatus((current) => (current === "streaming" ? current : "error"));
+        return null;
+      } finally {
+        setIsSpecLoading(false);
+      }
+    },
+    [sessionClient]
+  );
+
+  const handleViewMarkdown = useCallback(async () => {
+    const preview = await fetchSpecPreview(false);
+    setShowSpecDialog(false);
+    if (!preview) {
+      return;
+    }
+    setSelectedSessionId(null);
+    setSelectedSessionDetail(null);
+    setSpecSource("current");
+    setViewMode("spec");
+  }, [fetchSpecPreview]);
+
+  const handleViewPdf = useCallback(async () => {
+    const preview = await fetchSpecPreview(false);
+    setShowSpecDialog(false);
+    if (!preview) {
+      return;
+    }
+    if (!preview.pdfPath) {
+      const message = "Specification PDF is not available yet.";
+      setError(message);
+      setStatus((current) => (current === "streaming" ? current : "error"));
+      return;
+    }
+    const pdfUrl = sessionClient.buildSpecPdfUrl(sessionClient.getThreadId());
+    window.open(pdfUrl, "_blank", "noopener");
+  }, [fetchSpecPreview, sessionClient]);
+
+  const handleCloseSpecPanel = useCallback(() => {
+    setViewMode("chat");
   }, []);
 
-  const handleRequestDiagram = useCallback(() => {
-    console.info("Diagram generation requested.");
+  const handleCloseTranscript = useCallback(() => {
+    setViewMode("chat");
   }, []);
 
-  const handleOpenTranscript = useCallback(() => {
-    console.info("Transcript archive requested.");
-  }, []);
+  const refreshSessionSummaries = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      const summaries = await sessionClient.listSessions(25);
+      setSessionSummaries(summaries);
+    } catch (err) {
+      console.error("Failed to load session summaries", err);
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [sessionClient]);
+
+  useEffect(() => {
+    refreshSessionSummaries().catch(() => undefined);
+  }, [refreshSessionSummaries]);
+
+  const handleSelectSession = useCallback(async (sessionId: string | null) => {
+    if (!sessionId) {
+      setSelectedSessionId(null);
+      setSelectedSessionDetail(null);
+      setSpecSource("current");
+      setViewMode("spec");
+      return;
+    }
+    setSelectedSessionId(sessionId);
+    setSelectedSessionDetail(null);
+    setSpecSource("historical");
+    setIsHistoryLoading(true);
+    try {
+      const detail = await sessionClient.getSessionDetail(sessionId);
+      setSelectedSessionDetail(detail);
+      setError(null);
+      setStatus((current) => (current === "error" ? "idle" : current));
+      setViewMode("spec");
+    } catch (err) {
+      console.error("Failed to load session detail", err);
+      const message = err instanceof Error ? err.message : "Unable to load the selected session.";
+      setError(message);
+      setStatus((current) => (current === "streaming" ? current : "error"));
+      setSpecSource("current");
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }, [sessionClient]);
+
+  const handleRefreshSessions = useCallback(() => {
+    refreshSessionSummaries().catch(() => undefined);
+  }, [refreshSessionSummaries]);
+
+  const handleSubmitFeedback = useCallback(
+    async (message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) {
+        throw new Error("Feedback cannot be empty.");
+      }
+
+      const currentSessionId = specSource === "historical" ? selectedSessionId : sessionClient.getThreadId();
+      if (!currentSessionId) {
+        throw new Error("Session identifier is not available yet.");
+      }
+
+      setIsFeedbackSubmitting(true);
+      try {
+        const entry = await sessionClient.submitSpecFeedback(currentSessionId, trimmed);
+        if (specSource === "historical" && selectedSessionId) {
+          setSelectedSessionDetail((current) => {
+            if (!current || current.id !== selectedSessionId) {
+              return current;
+            }
+            return {
+              ...current,
+              feedback: [...current.feedback, entry],
+            };
+          });
+          setSessionSummaries((current) =>
+            current.map((summary) =>
+              summary.id === selectedSessionId
+                ? {
+                    ...summary,
+                    feedbackCount: summary.feedbackCount + 1,
+                  }
+                : summary
+            )
+          );
+        } else {
+          setCurrentFeedbackEntries((current) => [...current, entry]);
+        }
+      } catch (err) {
+        console.error("Failed to submit specification feedback", err);
+        const message = err instanceof Error ? err.message : "Unable to submit feedback.";
+        throw new Error(message);
+      } finally {
+        setIsFeedbackSubmitting(false);
+      }
+    },
+    [selectedSessionId, sessionClient, specSource]
+  );
 
   const handleRunTestAgent = useCallback(async () => {
     streamRef.current?.abort();
+    setViewMode("chat");
+    setShowSpecDialog(false);
+    setSpecPreview(null);
     setStatus("streaming");
     setError(null);
 
@@ -454,19 +648,133 @@ export default function App() {
     }
   }, [applyMessages, sessionClient]);
 
+  const buildDiagramKeys = useCallback((rawPath: string): string[] => {
+    const normalized = rawPath.replace(/\\+/g, "/");
+    const candidates = new Set<string>();
+
+    const addVariants = (base: string) => {
+      if (!base) {
+        return;
+      }
+      candidates.add(base);
+      if (!base.startsWith("./")) {
+        candidates.add(`./${base}`);
+      }
+      if (!base.startsWith(".\\")) {
+        candidates.add(`.\\${base}`);
+      }
+      if (!base.startsWith("/")) {
+        candidates.add(`/${base}`);
+      }
+      if (!base.startsWith("\\")) {
+        candidates.add(`\\${base}`);
+      }
+    };
+
+    addVariants(normalized);
+    addVariants(normalized.replace(/\//g, "\\"));
+
+    return Array.from(candidates);
+  }, []);
+
+  const displaySpec = specSource === "historical" ? selectedSessionDetail?.spec : specPreview;
+
+  const diagramSources = useMemo(() => {
+    if (!displaySpec) {
+      return {} as Record<string, string>;
+    }
+    const entries: Record<string, string> = {};
+    for (const diagram of displaySpec.diagrams) {
+      if (!diagram.path || !diagram.svg) {
+        continue;
+      }
+      const sanitizedSvg = diagram.svg.replace(/<\?xml[^>]*?>/i, "").trim();
+      const keys = buildDiagramKeys(diagram.path);
+      keys.forEach((key) => {
+        entries[key] = sanitizedSvg;
+      });
+      if (import.meta.env.DEV) {
+        console.debug("Registered diagram", { path: diagram.path, keys, length: sanitizedSvg.length });
+      }
+    }
+    return entries;
+  }, [displaySpec, buildDiagramKeys]);
+
+  const selectedSessionSummary = useMemo(() => {
+    if (!selectedSessionId) {
+      return null;
+    }
+    return sessionSummaries.find((item) => item.id === selectedSessionId) ?? null;
+  }, [selectedSessionId, sessionSummaries]);
+
+  const historicalFeedback = specSource === "historical" && selectedSessionDetail ? selectedSessionDetail.feedback : [];
+  const feedbackEntries = specSource === "historical" ? historicalFeedback : currentFeedbackEntries;
+  const sessionContextKey = specSource === "historical"
+    ? selectedSessionId ?? "historical"
+    : sessionClient.getThreadId();
+
   return (
     <CopilotProvider scope={scope}>
       <div className="app-shell">
         <Sidebar scope={scope} onScopeChange={setScope} status={status} />
-        <ChatPanel messages={messages} status={status} error={error} onSend={handleSend} onAbort={handleAbort} />
+        <div className="main-content">
+          <SessionHistoryBar
+            sessions={sessionSummaries}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={handleSelectSession}
+            onRefreshSessions={handleRefreshSessions}
+            disabled={sessionsLoading || isHistoryLoading}
+            isLoading={sessionsLoading}
+          />
+          {viewMode === "spec" ? (
+            <SpecPanel
+              markdown={displaySpec?.markdown ?? ""}
+              diagrams={diagramSources}
+              onClose={handleCloseSpecPanel}
+              sessionContextKey={sessionContextKey}
+              selectedSessionSummary={specSource === "historical" ? selectedSessionSummary : null}
+              isHistoryLoading={specSource === "historical" ? isHistoryLoading : false}
+              feedbackEntries={feedbackEntries}
+              onSubmitFeedback={handleSubmitFeedback}
+              isFeedbackSubmitting={isFeedbackSubmitting}
+            />
+          ) : viewMode === "transcript" ? (
+            <TranscriptPanel
+              session={selectedSessionDetail}
+              scope={scope}
+              isLoading={isHistoryLoading}
+              onClose={handleCloseTranscript}
+            />
+          ) : (
+            <ChatPanel messages={messages} status={status} error={error} onSend={handleSend} onAbort={handleAbort} />
+          )}
+        </div>
         <ActionDrawer
           status={status}
           onRunTestAgent={handleRunTestAgent}
           onRequestExport={handleRequestExport}
-          onRequestDiagram={handleRequestDiagram}
-          onOpenTranscript={handleOpenTranscript}
         />
       </div>
+      {showSpecDialog && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card" role="dialog" aria-modal="true" aria-label="View functional specification">
+            <h2>View Functional Specification</h2>
+            <p>Select the format you would like to open.</p>
+            {isSpecLoading && <p className="modal-note">Preparing the latest draft...</p>}
+            <div className="modal-actions">
+              <button type="button" onClick={handleViewMarkdown} disabled={isSpecLoading}>
+                View Markdown
+              </button>
+              <button type="button" onClick={handleViewPdf} disabled={isSpecLoading}>
+                Open PDF
+              </button>
+            </div>
+            <button type="button" className="link-button" onClick={() => setShowSpecDialog(false)} disabled={isSpecLoading}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </CopilotProvider>
   );
 }
