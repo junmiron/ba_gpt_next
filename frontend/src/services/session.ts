@@ -11,6 +11,7 @@ export interface AgentMessage {
 export interface TestAgentOptions {
   seed?: number;
   persona?: Record<string, unknown>;
+  language?: string;
 }
 
 export interface TestAgentPersona {
@@ -37,6 +38,7 @@ export interface TestAgentResult {
   recordId: string | null;
   specPath: string | null;
   pdfPath: string | null;
+  language?: string | null;
 }
 
 export interface SpecDiagramAsset {
@@ -268,6 +270,7 @@ function normalizeTestAgentResult(payload: Record<string, unknown>): TestAgentRe
   const recordIdValue = payload.record_id;
   const specPathValue = payload.spec_path;
   const pdfPathValue = payload.pdf_path;
+  const languageValue = payload.language;
 
   return {
     persona,
@@ -277,6 +280,7 @@ function normalizeTestAgentResult(payload: Record<string, unknown>): TestAgentRe
     recordId: recordIdValue == null ? null : String(recordIdValue),
     specPath: specPathValue == null ? null : String(specPathValue),
     pdfPath: pdfPathValue == null ? null : String(pdfPathValue),
+    language: typeof languageValue === "string" ? languageValue : null,
   };
 }
 
@@ -478,7 +482,11 @@ export class AguiSessionClient {
   private threadId = generateId("thread");
   private runCounter = 0;
 
-  constructor(private readonly baseUrl: string, private readonly scope: InterviewScope) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly scope: InterviewScope,
+    private readonly language?: string,
+  ) {}
 
   getThreadId(): string {
     return this.threadId;
@@ -499,15 +507,33 @@ export class AguiSessionClient {
     const runId = generateId("run");
     this.runCounter += 1;
 
+    const mergedState = { ...(options.state ?? {}) };
+    const stateLanguage =
+      (options.state && typeof options.state.language === "string" && options.state.language.trim())
+        ? String(options.state.language).trim()
+        : this.language;
+    if (stateLanguage) {
+      mergedState.language = stateLanguage;
+    }
+
     const payload = {
       thread_id: this.threadId,
       run_id: runId,
       messages: toAguiMessages(messages),
-      state: options.state,
+      state: mergedState,
       tools: options.tools,
     };
 
     const endpoint = `${this.baseUrl}/${this.scope}`;
+
+    if (import.meta.env.DEV) {
+      console.debug("AG-UI stream request", {
+        endpoint,
+        threadId: this.threadId,
+        runId,
+        state: mergedState,
+      });
+    }
 
     const events = (async function* (this: AguiSessionClient, signal: AbortSignal): AsyncGenerator<AgentEvent, void, void> {
       const response = await fetch(endpoint, {
@@ -546,12 +572,17 @@ export class AguiSessionClient {
   }
 
   async runTestAgent(options: TestAgentOptions = {}): Promise<TestAgentResult> {
+    const payload: TestAgentOptions = { ...(options ?? {}) };
+    if (!payload.language && this.language) {
+      payload.language = this.language;
+    }
+
     const response = await fetch(`${this.baseUrl}/test-agent/${this.scope}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(options ?? {}),
+      body: JSON.stringify(payload),
     });
 
     const rawPayload = await response.text();
@@ -585,13 +616,18 @@ export class AguiSessionClient {
     const endpoint = `${this.baseUrl}/test-agent/${this.scope}/stream`;
 
     const events = (async function* (this: AguiSessionClient, signal: AbortSignal): AsyncGenerator<TestAgentStreamEvent, void, void> {
+      const payload: TestAgentOptions = { ...(options ?? {}) };
+      if (!payload.language && this.language) {
+        payload.language = this.language;
+      }
+
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(options ?? {}),
+        body: JSON.stringify(payload),
         signal,
       });
 

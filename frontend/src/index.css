@@ -92,6 +92,27 @@ body {
   color: #f8fafc;
 }
 
+.language-selector {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.language-selector label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.language-selector select {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(15, 23, 42, 0.6);
+  color: #f8fafc;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.9rem;
+}
+
 .chat-panel {
   display: flex;
   flex-direction: column;

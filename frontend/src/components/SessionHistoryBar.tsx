@@ -1,4 +1,5 @@
 import type { ChangeEvent } from "react";
+import { useLocalization } from "../providers/LocalizationProvider";
 import type { SessionSummary } from "../services/session";
 
 interface SessionHistoryBarProps {
@@ -29,6 +30,7 @@ export function SessionHistoryBar({
   disabled = false,
   isLoading = false,
 }: SessionHistoryBarProps) {
+  const { t } = useLocalization();
   const hasHistory = sessions.length > 0;
 
   const handleChange = (event: ChangeEvent<HTMLSelectElement>) => {
@@ -37,13 +39,13 @@ export function SessionHistoryBar({
   };
 
   return (
-    <div className="session-history-bar" aria-label="Completed session selector">
+    <div className="session-history-bar" aria-label={t("history.ariaLabel")}>
       <div className="session-history-bar__info">
-        <h2>Session History</h2>
-        <p>Open previous interviews to review specs, transcripts, and feedback.</p>
+        <h2>{t("history.title")}</h2>
+        <p>{t("history.description")}</p>
       </div>
       <div className="session-selector">
-        <label htmlFor="session-history-select">Choose a session</label>
+        <label htmlFor="session-history-select">{t("history.label")}</label>
         <div className="session-selector__controls">
           <select
             id="session-history-select"
@@ -51,10 +53,14 @@ export function SessionHistoryBar({
             onChange={handleChange}
             disabled={disabled}
           >
-            <option value="">Current session</option>
+            <option value="">{t("history.currentOption")}</option>
             {sessions.map((summary) => (
               <option key={summary.id} value={summary.id}>
-                {summary.id} — {formatTimestamp(summary.createdAt) ?? "unknown"} · {summary.turnCount} turns
+                {t("history.optionLabel", {
+                  id: summary.id,
+                  timestamp: formatTimestamp(summary.createdAt) ?? t("history.unknownTime"),
+                  turns: t("history.turns", { count: summary.turnCount }),
+                })}
               </option>
             ))}
           </select>
@@ -65,12 +71,14 @@ export function SessionHistoryBar({
               onClick={onRefreshSessions}
               disabled={disabled}
             >
-              Refresh
+              {t("history.refresh")}
             </button>
           )}
         </div>
-        {!hasHistory && !isLoading && <p className="session-selector__hint">No completed sessions found yet.</p>}
-        {isLoading && <p className="session-selector__hint">Loading sessions…</p>}
+        {!hasHistory && !isLoading && (
+          <p className="session-selector__hint">{t("history.noSessions")}</p>
+        )}
+        {isLoading && <p className="session-selector__hint">{t("history.loading")}</p>}
       </div>
     </div>
   );

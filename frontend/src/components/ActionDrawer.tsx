@@ -1,3 +1,4 @@
+import { useLocalization } from "../providers/LocalizationProvider";
 import type { SessionStatus } from "./ChatPanel";
 
 interface ActionDrawerProps {
@@ -8,27 +9,28 @@ interface ActionDrawerProps {
 
 export function ActionDrawer({ status, onRunTestAgent, onRequestExport }: ActionDrawerProps) {
   const disabled = status === "streaming";
+  const { t } = useLocalization();
 
   return (
-    <aside className="action-drawer" aria-label="Recommended actions">
+    <aside className="action-drawer" aria-label={t("drawer.ariaLabel")}>
       <header>
-        <h2>Artifacts &amp; Insights</h2>
-        <p>Trigger downstream tasks while the interview progresses.</p>
+        <h2>{t("drawer.title")}</h2>
+        <p>{t("drawer.description")}</p>
       </header>
 
       <section className="action-card">
-        <h3>Run Test Agent</h3>
-        <p>Simulate the interview with an AI stakeholder to validate prompts and artifact generation.</p>
+        <h3>{t("drawer.testAgent.title")}</h3>
+        <p>{t("drawer.testAgent.description")}</p>
         <button type="button" onClick={onRunTestAgent} disabled={disabled}>
-          Launch simulation
+          {t("drawer.testAgent.button")}
         </button>
       </section>
 
       <section className="action-card">
-        <h3>View Functional Specification</h3>
-        <p>Open the current draft as Markdown or PDF to review collected insights and diagrams.</p>
+        <h3>{t("drawer.spec.title")}</h3>
+        <p>{t("drawer.spec.description")}</p>
         <button type="button" onClick={onRequestExport} disabled={disabled}>
-          View draft
+          {t("drawer.spec.button")}
         </button>
       </section>
 

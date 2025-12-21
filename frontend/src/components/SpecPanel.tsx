@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { SessionSummary, SpecFeedbackEntry } from "../services/session";
+import { useLocalization } from "../providers/LocalizationProvider";
 
 interface SpecPanelProps {
   markdown: string;
@@ -76,6 +77,7 @@ export function SpecPanel({
   onSubmitFeedback,
   isFeedbackSubmitting,
 }: SpecPanelProps) {
+  const { t } = useLocalization();
   const assetMap = useMemo(() => {
     const map = new Map<string, string>();
     Object.entries(diagrams).forEach(([key, value]) => {
@@ -149,15 +151,15 @@ export function SpecPanel({
     }
     const value = feedbackDraft.trim();
     if (!value) {
-      setFeedbackAlert({ type: "error", text: "Feedback cannot be empty." });
+      setFeedbackAlert({ type: "error", text: t("spec.feedback.emptyError") });
       return;
     }
     try {
       await onSubmitFeedback(value);
       setFeedbackDraft("");
-      setFeedbackAlert({ type: "success", text: "Feedback submitted." });
+      setFeedbackAlert({ type: "success", text: t("spec.feedback.success") });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to submit feedback.";
+      const message = err instanceof Error ? err.message : t("spec.feedback.error");
       setFeedbackAlert({ type: "error", text: message });
     }
   };
@@ -172,31 +174,33 @@ export function SpecPanel({
     : null;
 
   return (
-    <section className="spec-panel" aria-label="Functional specification">
+    <section className="spec-panel" aria-label={t("spec.ariaLabel")}>
       <header>
         <div>
-          <h1>Functional Specification</h1>
-          <p>The latest interview draft, including diagrams and structured outputs.</p>
+          <h1>{t("spec.title")}</h1>
+          <p>{t("spec.description")}</p>
         </div>
         <button type="button" className="link-button" onClick={onClose}>
-          Back to interview
+          {t("spec.back")}
         </button>
       </header>
 
       {selectedMeta && (
         <div className="session-meta">
           <p>
-            <strong>Session:</strong> {selectedMeta.id}
+            <strong>{t("spec.sessionMetaSession")}</strong> {selectedMeta.id}
             {selectedMeta.createdAt ? ` · ${selectedMeta.createdAt}` : ""}
-            {typeof selectedMeta.turnCount === "number" ? ` · ${selectedMeta.turnCount} turns` : ""}
+            {typeof selectedMeta.turnCount === "number"
+              ? ` · ${t("spec.sessionMetaTurns", { count: selectedMeta.turnCount })}`
+              : ""}
           </p>
           <p>
-            <strong>Feedback entries:</strong> {selectedMeta.feedbackCount}
+            <strong>{t("spec.sessionMetaFeedback")}</strong> {selectedMeta.feedbackCount}
           </p>
         </div>
       )}
       {isHistoryLoading && (
-        <p className="session-meta session-meta--loading">Loading selected session…</p>
+        <p className="session-meta session-meta--loading">{t("spec.sessionLoading")}</p>
       )}
 
       <div className="spec-scroll markdown-body">
@@ -205,33 +209,33 @@ export function SpecPanel({
           components={components}
           urlTransform={(uri) => uri ?? ""}
         >
-          {markdown || "Specification content is not available yet."}
+          {markdown || t("spec.markdownFallback")}
         </ReactMarkdown>
       </div>
 
       {onSubmitFeedback && (
-        <section className="feedback-panel" aria-label="Specification feedback">
-          <h2>Provide Feedback</h2>
+        <section className="feedback-panel" aria-label={t("spec.feedback.title")}>
+          <h2>{t("spec.feedback.title")}</h2>
           {feedbackList.length > 0 ? (
             <ul className="feedback-list">
               {feedbackList.map((entry) => (
                 <li key={entry.feedbackId}>
                   <p>{entry.message}</p>
-                  <span>{formatTimestamp(entry.createdAt) ?? "Unknown time"}</span>
+                  <span>{formatTimestamp(entry.createdAt) ?? t("spec.feedback.unknownTimestamp")}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="feedback-empty">No feedback has been submitted for this session yet.</p>
+            <p className="feedback-empty">{t("spec.feedback.empty")}</p>
           )}
 
           <form className="feedback-form" onSubmit={handleFeedbackSubmit}>
-            <label htmlFor="feedback-input">Suggest improvements or follow-up changes</label>
+            <label htmlFor="feedback-input">{t("spec.feedback.label")}</label>
             <textarea
               id="feedback-input"
               value={feedbackDraft}
               onChange={(event) => setFeedbackDraft(event.target.value)}
-              placeholder="Capture changes, risks, or open issues to revisit."
+              placeholder={t("spec.feedback.placeholder")}
               disabled={isFeedbackSubmitting}
             />
             <div className="feedback-actions">
@@ -239,7 +243,7 @@ export function SpecPanel({
                 <span className={`feedback-alert ${feedbackAlert.type}`}>{feedbackAlert.text}</span>
               )}
               <button type="submit" disabled={isFeedbackSubmitting}>
-                {isFeedbackSubmitting ? "Submitting…" : "Submit feedback"}
+                {isFeedbackSubmitting ? t("spec.feedback.submitting") : t("spec.feedback.submit")}
               </button>
             </div>
           </form>

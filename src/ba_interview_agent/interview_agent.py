@@ -24,7 +24,11 @@ from .config import AppSettings, InterviewScope
 from .diagram_agent import DiagramExportError, ProcessDiagramAgent
 from .maf_client import ChatMessage, MAFChatClient
 from .pdf_exporter import PDFExportError, SpecificationPDFExporter
-from .prompts import GUIDANCE, PROMPT_LIBRARY, ScopePromptPack
+from .prompts import (
+    DEFAULT_LANGUAGE,
+    ScopePromptPack,
+    get_language_pack,
+)
 from .spec_review_agent import (
     FollowUpQuestion,
     FunctionalSpecificationReviewAgent,
@@ -38,23 +42,6 @@ from .to_be_agent import (
 from .transcript_store import TranscriptRepository
 
 TERMINATION_TOKENS = {"done", "no further questions", "[end]"}
-
-CLOSING_PROMPT = (
-    "Before we wrap up, is there anything you'd like to add or "
-    "change in the specification?"
-)
-
-AS_IS_REVIEW_PROMPT = (
-    "Do these bullet points capture the current AS-IS state accurately? "
-    "Please add, edit, or approve them so we document today's reality "
-    "correctly."
-)
-
-TO_BE_REVIEW_PROMPT = (
-    "Do these bullet points reflect the desired TO-BE experience? Please "
-    "add, edit, or approve them so we capture the future-state vision "
-    "correctly."
-)
 
 NEGATIVE_FEEDBACK_RESPONSES = {
     "",
@@ -81,6 +68,18 @@ NEGATIVE_FEEDBACK_RESPONSES = {
     "that's all",
     "approve",
     "approved",
+    "sin cambios",
+    "no hay cambios",
+    "ningún cambio",
+    "ningun cambio",
+    "ninguna novedad",
+    "nada más",
+    "nada mas",
+    "todo bien",
+    "está bien",
+    "esta bien",
+    "quedamos asi",
+    "quedamos así",
 }.union({token.lower() for token in TERMINATION_TOKENS})
 
 logger = logging.getLogger(__name__)
@@ -252,15 +251,21 @@ class SpecificationArtifacts:
 class BusinessAnalystInterviewAgent:
     """Coordinates the interview flow and delegates LLM reasoning to MAF."""
 
-    def __init__(self, settings: AppSettings, scope: InterviewScope) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        scope: InterviewScope,
+        *,
+        language: str | None = None,
+    ) -> None:
         self._settings = settings
         self._scope = scope
-        self._prompt_pack: ScopePromptPack = PROMPT_LIBRARY[scope]
+        _, default_pack = get_language_pack(DEFAULT_LANGUAGE)
+        self._language = DEFAULT_LANGUAGE
+        self._prompt_pack: ScopePromptPack = default_pack.prompts[scope]
         self._chat_client = MAFChatClient(settings.model)
         self._transcript = InterviewTranscript(scope=scope)
-        self._system_guidance = "\n\n".join(
-            [GUIDANCE.system, GUIDANCE.interviewer]
-        )
+        self._system_guidance = ""
         self._transcript_repo: TranscriptRepository = TranscriptRepository(
             archive_path=settings.transcript_log,
             redis_url=settings.redis_url,
@@ -275,6 +280,7 @@ class BusinessAnalystInterviewAgent:
             settings=settings,
             scope=scope,
             subjects=[subject.name for subject in SUBJECT_PLAN],
+            language=language,
         )
         self._as_is_agent = AsIsDerivationAgent(
             settings=settings,
@@ -311,9 +317,99 @@ class BusinessAnalystInterviewAgent:
         self._pdf_exporter = SpecificationPDFExporter(
             asset_root=settings.output_dir
         )
+        self._closing_prompt = default_pack.closing_prompt
+        self._as_is_review_prompt = default_pack.as_is_review_prompt
+        self._to_be_review_prompt = default_pack.to_be_review_prompt
+        self._feedback_ack_positive = default_pack.feedback_ack_positive
+        self._feedback_ack_negative = default_pack.feedback_ack_negative
+        self._finalize_header = default_pack.finalize_header
+        self._finalize_saved_label = default_pack.finalize_saved_label
+        self._finalize_pdf_label = default_pack.finalize_pdf_label
+        self._finalize_record_label = default_pack.finalize_record_label
+        self._apply_language(language)
+
+    @property
+    def language(self) -> str:
+        return self._language
+
+    @property
+    def closing_prompt(self) -> str:
+        return self._closing_prompt
+
+    @property
+    def as_is_review_prompt(self) -> str:
+        return self._as_is_review_prompt
+
+    @property
+    def to_be_review_prompt(self) -> str:
+        return self._to_be_review_prompt
+
+    @property
+    def feedback_ack_positive(self) -> str:
+        return self._feedback_ack_positive
+
+    @property
+    def feedback_ack_negative(self) -> str:
+        return self._feedback_ack_negative
+
+    @property
+    def finalize_header(self) -> str:
+        return self._finalize_header
+
+    @property
+    def finalize_saved_label(self) -> str:
+        return self._finalize_saved_label
+
+    @property
+    def finalize_pdf_label(self) -> str:
+        return self._finalize_pdf_label
+
+    @property
+    def finalize_record_label(self) -> str:
+        return self._finalize_record_label
+
+    def set_language(self, language: str | None) -> None:
+        self._apply_language(language)
+
+    def _apply_language(self, language: str | None) -> None:
+        code, pack = get_language_pack(language or self._language)
+        if (
+            code == self._language
+            and self._closing_prompt == pack.closing_prompt
+            and self._prompt_pack is pack.prompts[self._scope]
+            and self._system_guidance
+        ):
+            return
+        if self._language != code:
+            logger.info(
+                "Interview agent language switching %s -> %s for scope=%s",
+                self._language,
+                code,
+                self._scope.value,
+            )
+        self._language = code
+        self._prompt_pack = pack.prompts[self._scope]
+        self._system_guidance = "\n\n".join(
+            [pack.guidance.system, pack.guidance.interviewer]
+        )
+        self._closing_prompt = pack.closing_prompt
+        self._as_is_review_prompt = pack.as_is_review_prompt
+        self._to_be_review_prompt = pack.to_be_review_prompt
+        self._feedback_ack_positive = pack.feedback_ack_positive
+        self._feedback_ack_negative = pack.feedback_ack_negative
+        self._finalize_header = pack.finalize_header
+        self._finalize_saved_label = pack.finalize_saved_label
+        self._finalize_pdf_label = pack.finalize_pdf_label
+        self._finalize_record_label = pack.finalize_record_label
+        self._review_agent.set_language(code)
 
     async def kickoff(self) -> str:
         """Generate the first interview question."""
+        logger.info(
+            "Interview kickoff for scope=%s using language=%s",
+            self._scope.value,
+            self._language,
+        )
         self._transcript.initial_user_prompt = self._prompt_pack.kickoff
         question = await self._generate_next_question()
         if question is None:
@@ -657,7 +753,7 @@ class BusinessAnalystInterviewAgent:
                 proposed_items=derived_items,
                 proposed_processes=derived_processes,
                 spec_text=spec_preview,
-                question=AS_IS_REVIEW_PROMPT,
+                question=self._as_is_review_prompt,
             )
         except Exception:  # noqa: BLE001 # pylint: disable=broad-except
             logger.exception(
@@ -780,7 +876,7 @@ class BusinessAnalystInterviewAgent:
                 proposed_items=derived_items,
                 proposed_processes=derived_processes,
                 spec_text=spec_preview,
-                question=TO_BE_REVIEW_PROMPT,
+                question=self._to_be_review_prompt,
             )
         except Exception:  # noqa: BLE001 # pylint: disable=broad-except
             logger.exception(
@@ -1504,6 +1600,16 @@ class BusinessAnalystInterviewAgent:
             "Keep the question conversational, professional, and grounded in "
             "prior answers."
         )
+        if self._language == "es":
+            lines.append(
+                'Importante: el valor de "question" debe estar redactado por completo '
+                'en español neutro y natural. No incluyas traducciones al inglés.'
+            )
+        else:
+            lines.append(
+                'Ensure the value of "question" remains in English and aligned with the '
+                "stakeholder's context."
+            )
         return "\n".join(lines)
 
     def _parse_question_decision(self, raw: str) -> QuestionDecision:
@@ -1715,21 +1821,18 @@ async def run_interview(settings: AppSettings, scope: InterviewScope) -> str:
 
     spec_text = await _produce_reviewed_specification()
 
-    print(f"BA Agent: {CLOSING_PROMPT}")
+    print(f"BA Agent: {agent.closing_prompt}")
     closing_response_raw = input("You: ")  # noqa: PLW1514
-    agent.record_question(CLOSING_PROMPT, answer=closing_response_raw)
+    agent.record_question(agent.closing_prompt, answer=closing_response_raw)
     closing_response = closing_response_raw.strip().lower().rstrip(".! ")
     wants_update = closing_response not in NEGATIVE_FEEDBACK_RESPONSES
     if wants_update:
         print()
-        print(
-            "BA Agent: Thanks! I'll incorporate that feedback into the "
-            "specification."
-        )
+        print(agent.feedback_ack_positive)
         spec_text = await _produce_reviewed_specification()
     else:
         print()
-        print("BA Agent: Understood. We'll keep the specification as-is.")
+        print(agent.feedback_ack_negative)
         print()
 
     artifacts = agent.export_spec(spec_text)
@@ -1737,10 +1840,10 @@ async def run_interview(settings: AppSettings, scope: InterviewScope) -> str:
         spec_text=spec_text,
         spec_path=artifacts.markdown_path,
     )
-    print("Interview complete. Functional specification saved to:")
-    print(f" - {artifacts.markdown_path}")
+    print(agent.finalize_header)
+    print(f" - {agent.finalize_saved_label}: {artifacts.markdown_path}")
     if artifacts.pdf_path is not None:
-        print(f" - {artifacts.pdf_path}")
+        print(f" - {agent.finalize_pdf_label}: {artifacts.pdf_path}")
     if record_id:
-        print(f"Transcript archived with id: {record_id}")
+        print(f"{agent.finalize_record_label}: {record_id}")
     return spec_text

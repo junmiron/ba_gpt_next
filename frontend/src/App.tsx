@@ -18,6 +18,7 @@ import { SpecPanel } from "./components/SpecPanel";
 import { TranscriptPanel } from "./components/TranscriptPanel";
 import { Sidebar } from "./components/Sidebar";
 import { SessionHistoryBar } from "./components/SessionHistoryBar";
+import { useLocalization } from "./providers/LocalizationProvider";
 
 function createMessageId(role: string) {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -82,6 +83,7 @@ function formatCompletionSummary(result: TestAgentResult): string {
 }
 
 export default function App() {
+  const { t, language } = useLocalization();
   const [scope, setScope] = useState<InterviewScope>(appConfig.defaultScope);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<SessionStatus>("idle");
@@ -99,7 +101,10 @@ export default function App() {
   const [isFeedbackSubmitting, setIsFeedbackSubmitting] = useState(false);
   const [currentFeedbackEntries, setCurrentFeedbackEntries] = useState<SpecFeedbackEntry[]>([]);
 
-  const sessionClient = useMemo(() => new AguiSessionClient(appConfig.apiBaseUrl, scope), [scope]);
+  const sessionClient = useMemo(
+    () => new AguiSessionClient(appConfig.apiBaseUrl, scope, language),
+    [scope, language],
+  );
 
   const messageRef = useRef<AgentMessage[]>(messages);
   const streamRef = useRef<{ abort: () => void; kind: "sse" | "test" } | null>(null);
@@ -211,7 +216,7 @@ export default function App() {
     setStatus("streaming");
 
     let cancelled = false;
-    const stream = sessionClient.stream([]);
+    const stream = sessionClient.stream([], { state: { language } });
     streamRef.current = { abort: stream.abort, kind: "sse" };
 
     (async () => {
@@ -255,7 +260,7 @@ export default function App() {
       cancelled = true;
       streamRef.current?.abort();
     };
-  }, [applyMessages, handleStreamEvent, sessionClient]);
+  }, [applyMessages, handleStreamEvent, sessionClient, language]);
 
   const handleSend = useCallback(
     async (text: string) => {
@@ -277,7 +282,7 @@ export default function App() {
       setStatus("streaming");
       setError(null);
 
-      const stream = sessionClient.stream(history);
+      const stream = sessionClient.stream(history, { state: { language } });
       streamRef.current = { abort: stream.abort, kind: "sse" };
 
       try {
@@ -308,7 +313,7 @@ export default function App() {
         }
       }
     },
-    [applyMessages, handleStreamEvent, sessionClient]
+    [applyMessages, handleStreamEvent, sessionClient, language]
   );
 
   const handleAbort = useCallback(() => {
@@ -381,14 +386,14 @@ export default function App() {
       return;
     }
     if (!preview.pdfPath) {
-      const message = "Specification PDF is not available yet.";
+      const message = t("errors.pdfUnavailable");
       setError(message);
       setStatus((current) => (current === "streaming" ? current : "error"));
       return;
     }
     const pdfUrl = sessionClient.buildSpecPdfUrl(sessionClient.getThreadId());
     window.open(pdfUrl, "_blank", "noopener");
-  }, [fetchSpecPreview, sessionClient]);
+  }, [fetchSpecPreview, sessionClient, t]);
 
   const handleCloseSpecPanel = useCallback(() => {
     setViewMode("chat");
@@ -434,14 +439,14 @@ export default function App() {
       setViewMode("spec");
     } catch (err) {
       console.error("Failed to load session detail", err);
-      const message = err instanceof Error ? err.message : "Unable to load the selected session.";
+      const message = err instanceof Error ? err.message : t("errors.sessionSelect");
       setError(message);
       setStatus((current) => (current === "streaming" ? current : "error"));
       setSpecSource("current");
     } finally {
       setIsHistoryLoading(false);
     }
-  }, [sessionClient]);
+  }, [sessionClient, t]);
 
   const handleRefreshSessions = useCallback(() => {
     refreshSessionSummaries().catch(() => undefined);
@@ -451,12 +456,12 @@ export default function App() {
     async (message: string) => {
       const trimmed = message.trim();
       if (!trimmed) {
-        throw new Error("Feedback cannot be empty.");
+        throw new Error(t("spec.feedback.emptyError"));
       }
 
       const currentSessionId = specSource === "historical" ? selectedSessionId : sessionClient.getThreadId();
       if (!currentSessionId) {
-        throw new Error("Session identifier is not available yet.");
+        throw new Error(t("errors.sessionIdMissing"));
       }
 
       setIsFeedbackSubmitting(true);
@@ -487,13 +492,13 @@ export default function App() {
         }
       } catch (err) {
         console.error("Failed to submit specification feedback", err);
-        const message = err instanceof Error ? err.message : "Unable to submit feedback.";
+        const message = err instanceof Error ? err.message : t("errors.feedbackSubmit");
         throw new Error(message);
       } finally {
         setIsFeedbackSubmitting(false);
       }
     },
-    [selectedSessionId, sessionClient, specSource]
+    [selectedSessionId, sessionClient, specSource, t]
   );
 
   const handleRunTestAgent = useCallback(async () => {
@@ -511,7 +516,7 @@ export default function App() {
     };
     applyMessages(() => [placeholder]);
 
-    const stream = sessionClient.streamTestAgent();
+    const stream = sessionClient.streamTestAgent({ language });
     streamRef.current = { abort: stream.abort, kind: "test" };
 
     const appendSystemMessage = (content: string) => {

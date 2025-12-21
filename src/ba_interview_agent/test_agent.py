@@ -14,16 +14,16 @@ from .config import AppSettings, InterviewScope
 from .as_is_agent import AsIsProcess, AsIsReviewResult
 from .interview_agent import (
     BusinessAnalystInterviewAgent,
-    CLOSING_PROMPT,
     NEGATIVE_FEEDBACK_RESPONSES,
 )
 from .maf_client import ChatMessage, MAFChatClient
 from .spec_review_agent import FollowUpQuestion
 from .to_be_agent import ToBeProcess, ToBeReviewResult
+from .prompts import DEFAULT_LANGUAGE, resolve_language_code
 
 ConversationTurn = tuple[str, str]
 
-_DEFAULT_PERSONA_DICT: Dict[str, object] = {
+_DEFAULT_PERSONA_EN: Dict[str, object] = {
     "project_name": "Unified Collaboration Platform",
     "company": "Contoso Labs",
     "stakeholder_role": "Director of Employee Experience",
@@ -47,6 +47,37 @@ _DEFAULT_PERSONA_DICT: Dict[str, object] = {
         "Wants decisions backed by pilot metrics.",
     ],
     "tone": "Be pragmatic, candid, and collaborative.",
+}
+
+_DEFAULT_PERSONA_ES: Dict[str, object] = {
+    "project_name": "Plataforma Unificada de Colaboracion",
+    "company": "Contoso Labs",
+    "stakeholder_role": "Directora de Experiencia del Empleado",
+    "context": (
+        "Implementar una plataforma transversal que agilice la incorporacion "
+        "y las solicitudes de servicio entre RR. HH., TI y Operaciones."
+    ),
+    "goals": [
+        "Lanzar un portal intuitivo que reduzca los tickets de soporte.",
+        "Unificar flujos duplicados entre unidades de negocio.",
+        "Mejorar los reportes sobre expectativas de nivel de servicio.",
+    ],
+    "risks": [
+        "Cansancio por el cambio tras despliegues recientes.",
+        "Retrasos de integracion con sistemas heredados de RR. HH. y finanzas.",
+        "Brechas de cumplimiento en reglas regionales de retencion de datos.",
+    ],
+    "preferences": [
+        "Valora el lenguaje claro y los proximos pasos concretos.",
+        "Prefiere reuniones semanales con indicadores de estado claros.",
+        "Quiere decisiones respaldadas por metricas piloto.",
+    ],
+    "tone": "Se pragmatica, franca y colaborativa.",
+}
+
+_DEFAULT_PERSONA_BY_LANG: Dict[str, Dict[str, object]] = {
+    "en": _DEFAULT_PERSONA_EN,
+    "es": _DEFAULT_PERSONA_ES,
 }
 
 
@@ -81,20 +112,28 @@ class SimulatedProjectPersona:
     risks: List[str]
     preferences: List[str]
     tone: str
+    language: str = "en"
 
     @classmethod
-    def from_dict(cls, data: Dict[str, object]) -> "SimulatedProjectPersona":
-        raw = {**_DEFAULT_PERSONA_DICT, **data}
+    def from_dict(
+        cls,
+        data: Dict[str, object],
+        *,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> "SimulatedProjectPersona":
+        lang = resolve_language_code(language)
+        defaults = _DEFAULT_PERSONA_BY_LANG.get(lang, _DEFAULT_PERSONA_BY_LANG[DEFAULT_LANGUAGE])
+        raw = {**defaults, **data}
         project_name = str(raw.get("project_name", "Project")).strip()
         company = str(raw.get("company", "Company")).strip()
         stakeholder_role = str(
             raw.get("stakeholder_role", "Stakeholder")
         ).strip()
         context = str(raw.get("context", "Context")).strip()
-        default_goals = _coerce_list(_DEFAULT_PERSONA_DICT["goals"], [])
-        default_risks = _coerce_list(_DEFAULT_PERSONA_DICT["risks"], [])
+        default_goals = _coerce_list(defaults.get("goals"), [])
+        default_risks = _coerce_list(defaults.get("risks"), [])
         default_preferences = _coerce_list(
-            _DEFAULT_PERSONA_DICT["preferences"], []
+            defaults.get("preferences"), []
         )
         goals = _coerce_list(raw.get("goals"), default_goals)
         risks = _coerce_list(raw.get("risks"), default_risks)
@@ -102,22 +141,29 @@ class SimulatedProjectPersona:
             raw.get("preferences"),
             default_preferences,
         )
-        tone = str(raw.get("tone", _DEFAULT_PERSONA_DICT["tone"]))
-        tone = tone.strip() or str(_DEFAULT_PERSONA_DICT["tone"])
+        tone = str(raw.get("tone", defaults.get("tone", "Maintain a candid tone.")))
+        tone = tone.strip() or str(defaults.get("tone", "Maintain a candid tone."))
         if not project_name:
-            project_name = "Strategic Initiative"
+            project_name = str(defaults.get("project_name", "Strategic Initiative"))
         if not company:
-            company = "Contoso"
+            company = str(defaults.get("company", "Contoso"))
         if not stakeholder_role:
-            stakeholder_role = "Business Sponsor"
+            stakeholder_role = str(defaults.get("stakeholder_role", "Business Sponsor"))
         if not context:
-            context = "Driving a cross-functional change programme."
+            context = str(defaults.get("context", "Driving a cross-functional change programme."))
         if not goals:
-            goals = ["Clarify requirements and adoption expectations."]
+            fallback_goal = default_goals[0] if default_goals else "Clarify requirements and adoption expectations."
+            goals = [fallback_goal]
         if not risks:
-            risks = ["Unclear ownership across departments."]
+            fallback_risk = default_risks[0] if default_risks else "Unclear ownership across departments."
+            risks = [fallback_risk]
         if not preferences:
-            preferences = ["Appreciates concise updates with clear owners."]
+            fallback_pref = (
+                default_preferences[0]
+                if default_preferences
+                else "Appreciates concise updates with clear owners."
+            )
+            preferences = [fallback_pref]
         return cls(
             project_name=project_name,
             company=company,
@@ -127,9 +173,21 @@ class SimulatedProjectPersona:
             risks=risks,
             preferences=preferences,
             tone=tone,
+            language=lang,
         )
 
     def summary_lines(self) -> List[str]:
+        if self.language == "es":
+            return [
+                f"Proyecto: {self.project_name}",
+                f"Empresa: {self.company}",
+                f"Rol de la parte interesada: {self.stakeholder_role}",
+                f"Contexto: {self.context}",
+                "Metas: " + "; ".join(self.goals),
+                "Riesgos: " + "; ".join(self.risks),
+                "Preferencias: " + "; ".join(self.preferences),
+                f"Guia de tono: {self.tone}",
+            ]
         return [
             f"Project: {self.project_name}",
             f"Company: {self.company}",
@@ -172,11 +230,28 @@ async def _generate_persona_dict(
     chat_client: MAFChatClient,
     scope: InterviewScope,
     seed: Optional[int],
+    language: str,
 ) -> Dict[str, object]:
+    language_code = resolve_language_code(language)
     scope_label = scope.value.replace("_", " ")
     seed_line = ""
     if seed is not None:
         seed_line = f"Use creative seed {seed} to add variation.\n"
+    if language_code == "es":
+        language_line = (
+            "Escribe todos los campos en espanol neutro y mantente conciso. "
+            "Asegurate de que metas, riesgos y preferencias sean arreglos con "
+            "tres frases cortas en espanol."
+        )
+        system_prompt = (
+            "Disenas personas de stakeholders realistas con enfoque en negocios. "
+            "Siempre respondes en espanol.")
+    else:
+        language_line = (
+            "Write all fields in clear international English. Ensure goals, risks, "
+            "and preferences are arrays of three short English phrases."
+        )
+        system_prompt = "You design detailed yet concise stakeholder personas."
     prompt = (
         "Create a realistic stakeholder persona for a business analyst "
         "interview.\n"
@@ -184,19 +259,16 @@ async def _generate_persona_dict(
         f"{seed_line}"
         "Return a compact JSON object with fields: project_name, company, "
         "stakeholder_role, context, goals, risks, preferences, and tone.\n"
-        "Make goals, risks, and preferences arrays of 3 short phrases each."
+        f"{language_line}"
     )
     messages = [
-        ChatMessage(
-            role="system",
-            content="You design detailed yet concise stakeholder personas.",
-        ),
+        ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=prompt),
     ]
     response = await chat_client.complete(messages)
     data = _extract_json_object(response.content)
     if data is None:
-        return dict(_DEFAULT_PERSONA_DICT)
+        return dict(_DEFAULT_PERSONA_BY_LANG.get(language_code, _DEFAULT_PERSONA_EN))
     return data
 
 
@@ -208,13 +280,19 @@ class SimulatedStakeholderResponder:
         *,
         persona: SimulatedProjectPersona,
         chat_client: MAFChatClient,
+        language: str,
     ) -> None:
         self._persona = persona
         self._chat_client = chat_client
+        self._language = language
 
     @property
     def persona(self) -> SimulatedProjectPersona:
         return self._persona
+
+    @property
+    def language(self) -> str:
+        return self._language
 
     @classmethod
     async def create(
@@ -224,7 +302,9 @@ class SimulatedStakeholderResponder:
         scope: InterviewScope,
         seed: Optional[int],
         persona_override: Optional[Dict[str, object]] = None,
+        language: Optional[str] = None,
     ) -> "SimulatedStakeholderResponder":
+        language_code = resolve_language_code(language or DEFAULT_LANGUAGE)
         chat_client = MAFChatClient(settings.model)
         if persona_override is not None:
             persona_data = persona_override
@@ -233,14 +313,35 @@ class SimulatedStakeholderResponder:
                 chat_client,
                 scope,
                 seed,
+                language_code,
             )
-        persona = SimulatedProjectPersona.from_dict(persona_data)
-        return cls(persona=persona, chat_client=chat_client)
+        persona = SimulatedProjectPersona.from_dict(
+            persona_data,
+            language=language_code,
+        )
+        return cls(
+            persona=persona,
+            chat_client=chat_client,
+            language=language_code,
+        )
 
     def _build_system_prompt(self) -> str:
         goals = "; ".join(self._persona.goals)
         risks = "; ".join(self._persona.risks)
         preferences = "; ".join(self._persona.preferences)
+        if self._language == "es":
+            return (
+                f"Eres {self._persona.stakeholder_role} en "
+                f"{self._persona.company}.\n"
+                f"Colaboras en la iniciativa '{self._persona.project_name}'.\n"
+                f"Contexto: {self._persona.context}\n"
+                f"Metas: {goals}\n"
+                f"Riesgos: {risks}\n"
+                f"Preferencias: {preferences}\n"
+                f"Guia de tono: {self._persona.tone}\n"
+                "Responde como una persona real usando 2-4 oraciones con detalle practico. "
+                "No menciones que eres un modelo y mantente siempre en espanol neutro."
+            )
         return (
             f"You are {self._persona.stakeholder_role} at "
             f"{self._persona.company}.\n"
@@ -251,9 +352,8 @@ class SimulatedStakeholderResponder:
             f"Risks: {risks}\n"
             f"Preferences: {preferences}\n"
             f"Tone guidance: {self._persona.tone}\n"
-            "Respond like a human stakeholder, using 2-4 sentences with "
-            "practical, domain-informed detail. Never mention that you "
-            "are an AI model."
+            "Respond like a human stakeholder, using 2-4 sentences with practical, "
+            "domain-informed detail. Never mention that you are an AI model."
         )
 
     def _build_history_messages(
@@ -268,9 +368,17 @@ class SimulatedStakeholderResponder:
         return messages
 
     def _format_question_prompt(self, question: str) -> str:
+        query = question.strip()
+        if self._language == "es":
+            return (
+                "Pregunta del analista: "
+                f"{query}\n"
+                "Responde como la parte interesada en 2-4 oraciones, enlazando metas, riesgos y preferencias cuando apliquen. "
+                "Mantente colaborativa y usa espanol neutro."
+            )
         return (
             "Interviewer question: "
-            f"{question.strip()}\n"
+            f"{query}\n"
             "Reply as the stakeholder in 2-4 sentences. Reference goals, "
             "risks, and preferences when relevant, and keep the tone "
             "collaborative."
@@ -308,15 +416,26 @@ class SimulatedStakeholderResponder:
             history_lines.append(f"BA: {question}")
             history_lines.append(f"Stakeholder: {answer}")
         history_text = "\n".join(history_lines)
-        prompt = (
-            "You have just reviewed the interview summary shown below. "
-            "Provide a short (max two sentences) reaction that confirms "
-            "what feels complete and any final requests.\n"
-            "Conversation recap:\n"
-            f"{history_text}\n\n"
-            "Draft specification:\n-----\n"
-            f"{spec_excerpt}\n-----"
-        )
+        if self._language == "es":
+            prompt = (
+                "Acabas de revisar el resumen de la entrevista mostrado abajo. "
+                "Redacta una reaccion breve (maximo dos oraciones) que confirme lo que se siente completo y cualquier solicitud final.\n"
+                "Recapitulacion de la conversacion:\n"
+                f"{history_text}\n\n"
+                "Borrador de la especificacion:\n-----\n"
+                f"{spec_excerpt}\n-----\n"
+                "Responde en espanol neutro."
+            )
+        else:
+            prompt = (
+                "You have just reviewed the interview summary shown below. "
+                "Provide a short (max two sentences) reaction that confirms "
+                "what feels complete and any final requests.\n"
+                "Conversation recap:\n"
+                f"{history_text}\n\n"
+                "Draft specification:\n-----\n"
+                f"{spec_excerpt}\n-----"
+            )
         messages = [
             ChatMessage(role="system", content=self._build_system_prompt()),
             ChatMessage(role="user", content=prompt),
@@ -330,6 +449,7 @@ async def simulate_interview(
     settings: AppSettings,
     scope: InterviewScope,
     responder: SimulatedStakeholderResponder,
+    language: Optional[str] = None,
     verbose: bool = True,
     observer: Optional[
         Callable[[str, Dict[str, object]], Awaitable[None] | None]
@@ -337,7 +457,14 @@ async def simulate_interview(
 ) -> Dict[str, object]:
     """Run an interview using an LLM-backed stakeholder persona."""
 
-    agent = BusinessAnalystInterviewAgent(settings=settings, scope=scope)
+    language_code = resolve_language_code(
+        language or getattr(responder, "language", None) or DEFAULT_LANGUAGE
+    )
+    agent = BusinessAnalystInterviewAgent(
+        settings=settings,
+        scope=scope,
+        language=language_code,
+    )
     transcript: List[ConversationTurn] = []
 
     async def _emit(event_type: str, **payload: object) -> None:
@@ -415,7 +542,9 @@ async def simulate_interview(
                     "Functional specification excerpt:\n" + excerpt
                 )
             prompt_parts.append(
-                "Respond in 1-2 sentences confirming whether the AS-IS summary captures reality. "
+                "Responde en 1-2 oraciones confirmando si el resumen AS-IS refleja la realidad. "
+                "Menciona solo los vacios criticos si quedan." if responder.language == "es"
+                else "Respond in 1-2 sentences confirming whether the AS-IS summary captures reality. "
                 "Call out only the most critical gaps if any remain."
             )
             prompt = "\n\n".join(part for part in prompt_parts if part)
@@ -498,7 +627,9 @@ async def simulate_interview(
                     "Functional specification excerpt:\n" + excerpt
                 )
             prompt_parts.append(
-                "Reply in 1-2 sentences confirming the target TO-BE vision. Highlight only critical adjustments if needed."
+                "Responde en 1-2 oraciones confirmando la vision TO-BE esperada. Destaca solo ajustes criticos si son necesarios."
+                if responder.language == "es"
+                else "Reply in 1-2 sentences confirming the target TO-BE vision. Highlight only critical adjustments if needed."
             )
             prompt = "\n\n".join(part for part in prompt_parts if part)
 
@@ -702,7 +833,7 @@ async def simulate_interview(
 
     spec_text = await _produce_reviewed_specification()
 
-    await _emit("message", role="assistant", content=CLOSING_PROMPT)
+    await _emit("message", role="assistant", content=agent.closing_prompt)
     await _emit(
         "status",
         content="Awaiting stakeholder closing feedback...",
@@ -712,7 +843,7 @@ async def simulate_interview(
         spec_text=spec_text,
         conversation=transcript,
     )
-    agent.record_question(CLOSING_PROMPT, answer=closing_answer)
+    agent.record_question(agent.closing_prompt, answer=closing_answer)
     await _emit("message", role="user", content=closing_answer)
     if closing_answer.strip().lower() not in NEGATIVE_FEEDBACK_RESPONSES:
         await _emit(
@@ -746,14 +877,14 @@ async def simulate_interview(
     await _emit("status", content="Simulation complete.")
 
     if verbose:
-        print(f"BA Agent: {CLOSING_PROMPT}")
+        print(f"BA Agent: {agent.closing_prompt}")
         print(f"Test Agent: {closing_answer}\n")
-        print("Simulation complete. Functional specification saved to:")
-        print(f" - {spec_path}")
+        print(agent.finalize_header)
+        print(f" - {agent.finalize_saved_label}: {spec_path}")
         if spec_artifacts.pdf_path is not None:
-            print(f" - {spec_artifacts.pdf_path}")
+            print(f" - {agent.finalize_pdf_label}: {spec_artifacts.pdf_path}")
         if record_id:
-            print(f"Transcript id: {record_id}")
+            print(f"{agent.finalize_record_label}: {record_id}")
 
     return {
         "persona": responder.persona,
@@ -763,6 +894,7 @@ async def simulate_interview(
         "closing_feedback": closing_answer,
         "record_id": record_id,
         "review_warnings": review_warnings,
+        "language": language_code,
     }
 
 
@@ -854,6 +986,7 @@ def run_test_agent_cli(
                 settings=settings,
                 scope=scope,
                 responder=responder,
+                language=responder.language,
                 verbose=verbose,
             )
             if not verbose:

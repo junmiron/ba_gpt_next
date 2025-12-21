@@ -23,6 +23,7 @@ from pydantic import BaseModel
 class TestAgentRequest(BaseModel):
     seed: Optional[int] = None
     persona: Optional[Dict[str, Any]] = None
+    language: Optional[str] = None
 
 
 class SpecPreviewRequest(BaseModel):
@@ -129,6 +130,8 @@ from starlette.responses import StreamingResponse
 from fastapi.responses import FileResponse
 
 from .config import AppSettings, InterviewScope
+from .observability import initialize_tracing
+from .prompts import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, resolve_language_code
 from .transcript_archive import TranscriptArchive
 from .sessions import BusinessAnalystSession
 from .test_agent import SimulatedStakeholderResponder, simulate_interview
@@ -161,6 +164,10 @@ class BusinessAnalystAGUIAgent:
         self._thread_keys: WeakKeyDictionary[AgentThread, list[str]] = (
             WeakKeyDictionary()
         )
+        self._thread_languages: WeakKeyDictionary[AgentThread, str] = (
+            WeakKeyDictionary()
+        )
+        self._language_lookup: dict[str, str] = {}
         self._session_lookup: dict[str, BusinessAnalystSession] = {}
         self._retained_session_keys: list[str] = []
         self._retained_session_limit = 8
@@ -194,10 +201,11 @@ class BusinessAnalystAGUIAgent:
         messages: MessageInput = None,
         *,
         thread: AgentThread | None = None,
+        state: Mapping[str, object] | None = None,
         **_: object,
     ) -> AgentRunResponse:
         updates: list[AgentRunResponseUpdate] = []
-        async for update in self.run_stream(messages, thread=thread):
+        async for update in self.run_stream(messages, thread=thread, state=state):
             updates.append(update)
         if updates:
             return AgentRunResponse.from_agent_run_response_updates(updates)
@@ -208,16 +216,67 @@ class BusinessAnalystAGUIAgent:
         messages: MessageInput = None,
         *,
         thread: AgentThread | None = None,
+        state: Mapping[str, object] | None = None,
         **_: object,
     ) -> AsyncIterator[AgentRunResponseUpdate]:
         thread = thread or self.get_new_thread()
         session_state: Optional[BusinessAnalystSession] = self._sessions.get(thread)
         user_text = self._extract_user_text(messages)
 
+        if state is None and thread is not None:
+            metadata = getattr(thread, "metadata", None)
+            if isinstance(metadata, Mapping):
+                metadata_state = metadata.get("current_state")
+                if isinstance(metadata_state, Mapping):
+                    state = metadata_state
+                elif isinstance(metadata_state, str):
+                    try:
+                        loaded_state = json.loads(metadata_state)
+                    except json.JSONDecodeError:
+                        loaded_state = None
+                    if isinstance(loaded_state, dict):
+                        state = loaded_state
+
+        state_language = None
+        if state is not None:
+            logging.info(
+                "AGUI run_stream received state keys=%s for scope=%s",
+                list(state.keys()),
+                self._scope.value,
+            )
+            state_language = self._normalize_language_value(state.get("language"))
+            logging.info(
+                "AGUI run_stream normalized state language=%s",
+                state_language,
+            )
+
+        preferred_language = state_language
+        if preferred_language is None:
+            preferred_language = self._thread_languages.get(thread)
+        if preferred_language is None:
+            preferred_language = self._lookup_language_for_thread(thread)
+        if preferred_language is None:
+            preferred_language = DEFAULT_LANGUAGE
+
+        self._remember_language(thread, preferred_language)
+        logging.info(
+            "AGUI run_stream resolved language=%s for scope=%s thread=%s",
+            preferred_language,
+            self._scope.value,
+            getattr(thread, "id", None) or id(thread),
+        )
+
         if session_state is None:
             session_state = BusinessAnalystSession.create(
                 settings=self._settings,
                 scope=self._scope,
+                language=preferred_language,
+            )
+            if session_state.agent.language != preferred_language:
+                session_state.set_language(preferred_language)
+            logging.debug(
+                "Created new session with agent language=%s",
+                session_state.agent.language,
             )
             kickoff = await session_state.kickoff()
             await self._append_assistant_message(thread, kickoff)
@@ -228,6 +287,12 @@ class BusinessAnalystAGUIAgent:
                 return
         else:
             self._register_session(thread, session_state)
+            if session_state.agent.language != preferred_language:
+                session_state.set_language(preferred_language)
+                logging.debug(
+                    "Updated existing session language to %s",
+                    preferred_language,
+                )
 
         if not user_text:
             return
@@ -341,6 +406,37 @@ class BusinessAnalystAGUIAgent:
 
         return ""
 
+    @staticmethod
+    def _normalize_language_value(value: object) -> str | None:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized:
+                return None
+            normalized = normalized.replace("_", "-")
+            normalized = normalized.split("-")[0]
+            if normalized in SUPPORTED_LANGUAGES:
+                return normalized
+        return None
+
+    def _remember_language(self, thread: AgentThread, language: str) -> None:
+        normalized = language if language in SUPPORTED_LANGUAGES else resolve_language_code(language)
+        self._thread_languages[thread] = normalized
+        keys = self._compute_thread_keys(thread)
+        if not keys:
+            return
+        for key in keys:
+            self._language_lookup[key] = normalized
+
+    def _lookup_language_for_thread(self, thread: AgentThread) -> str | None:
+        keys = self._thread_keys.get(thread)
+        if not keys:
+            keys = self._compute_thread_keys(thread)
+        for key in keys:
+            stored = self._language_lookup.get(key)
+            if stored:
+                return stored
+        return None
+
     def _compute_thread_keys(self, thread: AgentThread) -> list[str]:
         keys: list[str] = []
         for attr in ("id", "thread_id", "threadId", "identifier"):
@@ -365,6 +461,10 @@ class BusinessAnalystAGUIAgent:
         if not keys:
             return
         self._thread_keys[thread] = keys
+        language = self._thread_languages.get(thread)
+        if language:
+            for key in keys:
+                self._language_lookup[key] = language
         for key in keys:
             self._session_lookup[key] = session
             if key in self._retained_session_keys:
@@ -394,6 +494,7 @@ class BusinessAnalystAGUIAgent:
             if existing is not None and existing in self._sessions.values():
                 continue
             self._session_lookup.pop(key, None)
+            self._language_lookup.pop(key, None)
             try:
                 self._retained_session_keys.remove(key)
             except ValueError:
@@ -413,6 +514,7 @@ class BusinessAnalystAGUIAgent:
                 self._retained_session_keys.append(oldest)
                 continue
             self._session_lookup.pop(oldest, None)
+            self._language_lookup.pop(oldest, None)
 
 
 def _build_response_from_simulation(persona: object, result: Dict[str, Any]) -> Dict[str, object]:
@@ -450,6 +552,7 @@ def _build_response_from_simulation(persona: object, result: Dict[str, Any]) -> 
         "record_id": record_id if record_id is None else str(record_id),
         "spec_path": str(spec_path) if spec_path is not None else None,
         "pdf_path": str(pdf_path) if pdf_path is not None else None,
+        "language": result.get("language"),
     }
 
 
@@ -703,6 +806,8 @@ def create_app(
             scope.value,
         )
 
+        language_code = resolve_language_code(payload.language or DEFAULT_LANGUAGE)
+
         try:
             responder = await asyncio.wait_for(
                 SimulatedStakeholderResponder.create(
@@ -710,6 +815,7 @@ def create_app(
                     scope=scope,
                     seed=payload.seed,
                     persona_override=payload.persona,
+                    language=language_code,
                 ),
                 timeout=test_agent_timeout,
             )
@@ -737,6 +843,7 @@ def create_app(
                     settings=runtime_settings,
                     scope=scope,
                     responder=responder,
+                    language=language_code,
                     verbose=False,
                 ),
                 timeout=test_agent_timeout,
@@ -784,6 +891,18 @@ def create_app(
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         done_token = object()
 
+        language_code = resolve_language_code(payload.language or DEFAULT_LANGUAGE)
+        status_translations = {
+            "Confirming AS-IS understanding with the stakeholder...": "Confirmando la comprension AS-IS con la parte interesada...",
+            "Reviewing the target TO-BE vision with the stakeholder...": "Revisando la vision TO-BE objetivo con la parte interesada...",
+            "Generating functional specification draft...": "Generando el borrador de la especificacion funcional...",
+            "Reviewer requested additional details...": "El revisor solicito detalles adicionales...",
+            "Additional details captured. Regenerating the specification...": "Se capturaron detalles adicionales. Regenerando la especificacion...",
+            "Awaiting stakeholder closing feedback...": "Esperando la retroalimentacion final de la parte interesada...",
+            "Stakeholder approved summary. Refreshing specification...": "La parte interesada aprobo el resumen. Actualizando la especificacion...",
+            "Simulation complete.": "Simulacion completada.",
+        }
+
         async def enqueue(event: Dict[str, Any]) -> None:
             await queue.put(event)
 
@@ -820,6 +939,10 @@ def create_app(
 
             if kind == "message" and not event.get("content"):
                 return
+            if kind == "status" and language_code == "es":
+                translated = status_translations.get(event.get("content", ""))
+                if translated:
+                    event["content"] = translated
             await enqueue(event)
 
         async def producer() -> None:
@@ -827,7 +950,11 @@ def create_app(
                 await enqueue(
                     {
                         "type": "status",
-                        "content": "Preparing simulated stakeholder persona...",
+                        "content": (
+                            "Preparando la persona simulada del stakeholder..."
+                            if language_code == "es"
+                            else "Preparing simulated stakeholder persona..."
+                        ),
                     }
                 )
                 responder = await asyncio.wait_for(
@@ -836,6 +963,7 @@ def create_app(
                         scope=scope,
                         seed=payload.seed,
                         persona_override=payload.persona,
+                        language=language_code,
                     ),
                     timeout=test_agent_timeout,
                 )
@@ -844,6 +972,7 @@ def create_app(
                         settings=runtime_settings,
                         scope=scope,
                         responder=responder,
+                        language=language_code,
                         verbose=False,
                         observer=observer,
                     ),
@@ -993,9 +1122,32 @@ def create_app(
         if not message:
             raise HTTPException(status_code=400, detail="Feedback message cannot be empty.")
         record = archive.get(session_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="Session not found.")
-        entry = _append_feedback_entry(session_id, message)
+        target_session_id = session_id
+        session_found = record is not None
+
+        if not session_found:
+            for agent in agent_registry.values():
+                session_state = agent.get_session_by_id(session_id)
+                if session_state is None:
+                    continue
+                session_found = True
+                archived_identifier = getattr(session_state, "archived_record_id", None)
+                if archived_identifier:
+                    target_session_id = archived_identifier
+                    record = archive.get(archived_identifier)
+                    if record is None:
+                        archive.refresh()
+                        record = archive.get(archived_identifier)
+                break
+
+        if not session_found:
+            archive.refresh()
+            record = archive.get(session_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="Session not found.")
+            session_found = True
+
+        entry = _append_feedback_entry(target_session_id, message)
         return entry
 
     @app.post("/spec/{scope_name}", response_model=SpecPreviewResponse)
@@ -1120,8 +1272,14 @@ def run_agui_server(
     allow_origins: Sequence[str] | None = None,
     reload: bool = False,
     log_level: str = "info",
+    enable_tracing: bool = False,
+    otlp_endpoint: str | None = None,
+    capture_sensitive: bool | None = None,
 ) -> None:
     """Start the AG-UI FastAPI server."""
+
+    if enable_tracing:
+        initialize_tracing(endpoint=otlp_endpoint, enable_sensitive_data=capture_sensitive)
 
     app = create_app(
         settings=settings,
@@ -1179,6 +1337,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="info",
         help="Logging level for uvicorn (default: info).",
     )
+    parser.add_argument(
+        "--tracing",
+        action="store_true",
+        help="Enable OpenTelemetry tracing for the AG-UI server.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1196,6 +1359,16 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         selected_scopes = [InterviewScope(scope) for scope in args.scope]
 
+    tracing_env = os.getenv("MAF_TRACING_ENABLED", "").strip().lower()
+    tracing_flag = bool(args.tracing)
+    if not tracing_flag and tracing_env:
+        tracing_flag = tracing_env in {"1", "true", "yes", "on"}
+
+    capture_env = os.getenv("MAF_TRACING_CAPTURE_SENSITIVE", "").strip().lower()
+    capture_sensitive: bool | None = None
+    if capture_env:
+        capture_sensitive = capture_env in {"1", "true", "yes", "on"}
+
     run_agui_server(
         settings=settings,
         host=args.host,
@@ -1204,6 +1377,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         allow_origins=args.allow_origin,
         reload=args.reload,
         log_level=args.log_level,
+        enable_tracing=tracing_flag,
+        otlp_endpoint=os.getenv("MAF_OTLP_ENDPOINT"),
+        capture_sensitive=capture_sensitive,
     )
 
 

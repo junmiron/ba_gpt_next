@@ -51,6 +51,9 @@ cp .env.example .env
 | `MAF_REDIS_URL` | Optional Redis connection string for transcript storage (default: `redis://localhost:6379/0`). |
 | `MAF_SUBJECT_MAX_QUESTIONS` | Maximum number of questions to ask per subject before moving on (default: `3`). |
 | `MAF_REVIEW_MAX_PASSES` | Maximum number of automated reviewer retries before surfacing unresolved items (default: `3`). |
+| `MAF_TRACING_ENABLED` | Set to `true` to initialize OpenTelemetry tracing for the runtime. |
+| `MAF_OTLP_ENDPOINT` | Optional OTLP collector endpoint (default: `http://localhost:4317`). |
+| `MAF_TRACING_CAPTURE_SENSITIVE` | Set to `false` to omit prompts and completions from captured traces. |
 
 > **Note:** The legacy `MAF_TRANSCRIPT_DB` variable is still honored and treated as the JSONL
 > archive path. Make sure a Redis instance is reachable at the configured URL (for local
@@ -83,6 +86,16 @@ python -m ba_interview_agent --devui
 ```
 
 By default the DevUI listens on `http://127.0.0.1:8080` and opens a browser window automatically. Use `--devui-host`, `--devui-port`, or `--devui-no-auto-open` to adjust the server settings. Supply `--scope` to expose only a single interview scope in the UI. Pass `--devui-tracing` (or set `ENABLE_OTEL=true`) to enable OpenTelemetry tracing in the DevUI.
+
+### Enable OpenTelemetry tracing
+
+Launch the AG-UI server with tracing enabled so spans stream to the AI Toolkit collector:
+
+```bash
+python -m ba_interview_agent.agui --tracing
+```
+
+The runtime also honors the `MAF_TRACING_ENABLED` environment variable. Override the exporter endpoint with `MAF_OTLP_ENDPOINT` (defaults to `http://localhost:4317`) and toggle prompt capture with `MAF_TRACING_CAPTURE_SENSITIVE=false`.
 
 ### 6. Explore transcripts (optional)
 

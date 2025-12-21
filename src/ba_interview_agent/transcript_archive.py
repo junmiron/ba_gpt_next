@@ -86,6 +86,7 @@ class TranscriptArchive:
             redis_url=settings.redis_url,
         )
         self._json_cache: Optional[Dict[str, TranscriptRecord]] = None
+        self._json_cache_mtime: Optional[float] = None
 
     def list(
         self,
@@ -103,6 +104,11 @@ class TranscriptArchive:
             record = self._fetch_from_redis(client, record_id)
             if record:
                 return record
+        cache = self._load_json_cache()
+        record = cache.get(record_id)
+        if record is not None:
+            return record
+        self.refresh()
         cache = self._load_json_cache()
         return cache.get(record_id)
 
@@ -215,17 +221,37 @@ class TranscriptArchive:
             return None
         return self._record_from_payload(payload)
 
+    def refresh(self) -> None:
+        """Reset cached transcript metadata forcing disk reload on next access."""
+
+        self._json_cache = None
+        self._json_cache_mtime = None
+
     def _load_json_cache(self) -> Dict[str, TranscriptRecord]:
-        if self._json_cache is not None:
+        path = self._repo.archive_path
+        current_mtime: Optional[float] = None
+        if path.exists():
+            try:
+                current_mtime = path.stat().st_mtime
+            except OSError:
+                current_mtime = None
+        if (
+            self._json_cache is not None
+            and self._json_cache_mtime is not None
+            and current_mtime is not None
+            and self._json_cache_mtime >= current_mtime
+        ):
             return self._json_cache
         sessions: Dict[str, TranscriptRecord] = {}
         path = self._repo.archive_path
         if not path.exists():
             self._json_cache = {}
+            self._json_cache_mtime = None
             return self._json_cache
         with path.open("r", encoding="utf-8") as handle:
             sessions = self._parse_jsonl(handle)
         self._json_cache = sessions
+        self._json_cache_mtime = current_mtime
         return sessions
 
     def _parse_jsonl(

@@ -9,7 +9,6 @@ from typing import List, Optional
 from .config import AppSettings, InterviewScope
 from .interview_agent import (
     BusinessAnalystInterviewAgent,
-    CLOSING_PROMPT,
     NEGATIVE_FEEDBACK_RESPONSES,
     TERMINATION_TOKENS,
     SpecificationArtifacts,
@@ -28,14 +27,26 @@ class BusinessAnalystSession:
     last_spec_text: Optional[str] = None
     last_spec_markdown_path: Optional[Path] = None
     last_spec_pdf_path: Optional[Path] = None
+    archived_record_id: Optional[str] = None
 
     @classmethod
     def create(
-        cls, settings: AppSettings, scope: InterviewScope
+        cls,
+        settings: AppSettings,
+        scope: InterviewScope,
+        *,
+        language: str | None = None,
     ) -> "BusinessAnalystSession":
         return cls(
-            agent=BusinessAnalystInterviewAgent(settings=settings, scope=scope)
+            agent=BusinessAnalystInterviewAgent(
+                settings=settings,
+                scope=scope,
+                language=language,
+            )
         )
+
+    def set_language(self, language: str | None) -> None:
+        self.agent.set_language(language)
 
     async def kickoff(self) -> str:
         """Start the interview and return the initial question."""
@@ -107,20 +118,18 @@ class BusinessAnalystSession:
 
         spec_text = await self.agent.summarize()
         self.pending_spec_text = spec_text
-        message = f"{spec_text}\n\n{CLOSING_PROMPT}"
+        message = f"{spec_text}\n\n{self.agent.closing_prompt}"
         self.awaiting_closing_feedback = True
         self.final_message = message
         return message
 
     async def _handle_closing_feedback(self, user_text: str) -> List[str]:
         updates: List[str] = []
-        self.agent.record_question(CLOSING_PROMPT, answer=user_text)
+        self.agent.record_question(self.agent.closing_prompt, answer=user_text)
 
         wants_update = user_text.lower() not in NEGATIVE_FEEDBACK_RESPONSES
         if wants_update:
-            acknowledgement = (
-                "BA Agent: Thanks! I'll incorporate that feedback into the specification."
-            )
+            acknowledgement = self.agent.feedback_ack_positive
             updates.append(acknowledgement)
             updated_spec = await self.agent.summarize()
             spec_message = (
@@ -130,9 +139,7 @@ class BusinessAnalystSession:
             updates.append(spec_message)
             final_spec = updated_spec
         else:
-            acknowledgement = (
-                "BA Agent: Understood. We'll keep the specification as-is."
-            )
+            acknowledgement = self.agent.feedback_ack_negative
             updates.append(acknowledgement)
             final_spec = self.pending_spec_text
             if final_spec is None:
@@ -146,17 +153,23 @@ class BusinessAnalystSession:
             spec_text=final_spec,
             spec_path=output_path,
         )
+        if record_id:
+            self.archived_record_id = record_id
         self.last_spec_text = final_spec
         self.last_spec_markdown_path = artifacts.markdown_path
         self.last_spec_pdf_path = artifacts.pdf_path
         closing_lines = [
-            "Interview complete. Functional specification saved to:",
-            f" - {output_path}",
+            self.agent.finalize_header,
+            f" - {self.agent.finalize_saved_label}: {output_path}",
         ]
         if artifacts.pdf_path is not None:
-            closing_lines.append(f" - {artifacts.pdf_path}")
+            closing_lines.append(
+                f" - {self.agent.finalize_pdf_label}: {artifacts.pdf_path}"
+            )
         if record_id:
-            closing_lines.append(f"Transcript id: {record_id}")
+            closing_lines.append(
+                f"{self.agent.finalize_record_label}: {record_id}"
+            )
         closing_message = "\n".join(closing_lines)
         updates.append(closing_message)
         self.completed = True
