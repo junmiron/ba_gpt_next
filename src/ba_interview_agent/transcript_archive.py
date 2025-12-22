@@ -159,6 +159,24 @@ class TranscriptArchive:
             counts_by_scope=dict(counts),
         )
 
+    def append_spec_update(
+        self,
+        record_id: str,
+        *,
+        scope: InterviewScope,
+        spec_text: str,
+        spec_path: Optional[Path] = None,
+    ) -> None:
+        """Persist a refreshed specification snapshot for an existing session."""
+
+        self._repo.update_spec_summary(
+            record_id,
+            scope=scope,
+            spec_text=spec_text,
+            spec_path=spec_path,
+        )
+        self.refresh()
+
     def _iter_records(
         self,
         *,

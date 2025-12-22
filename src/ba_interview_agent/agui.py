@@ -133,7 +133,9 @@ from .config import AppSettings, InterviewScope
 from .observability import initialize_tracing
 from .prompts import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, resolve_language_code
 from .transcript_archive import TranscriptArchive
+from .interview_agent import BusinessAnalystInterviewAgent
 from .sessions import BusinessAnalystSession
+from .transcript_archive import TranscriptRecord
 from .test_agent import SimulatedStakeholderResponder, simulate_interview
 
 MessageInput = (
@@ -439,7 +441,14 @@ class BusinessAnalystAGUIAgent:
 
     def _compute_thread_keys(self, thread: AgentThread) -> list[str]:
         keys: list[str] = []
-        for attr in ("id", "thread_id", "threadId", "identifier"):
+        for attr in (
+            "id",
+            "thread_id",
+            "threadId",
+            "identifier",
+            "service_thread_id",
+            "conversation_id",
+        ):
             value = getattr(thread, attr, None)
             if isinstance(value, str) and value.strip():
                 keys.append(value.strip())
@@ -718,6 +727,54 @@ def create_app(
             message=message,
             created_at=timestamp,
         )
+
+    async def _regenerate_spec_from_feedback(
+        record_id: str,
+        record: TranscriptRecord,
+        feedback_message: str,
+    ) -> None:
+        sanitized = feedback_message.strip()
+        if not sanitized:
+            return
+        agent = BusinessAnalystInterviewAgent(settings=settings, scope=record.scope)
+        agent.load_transcript_history(
+            turns=record.turns,
+            initial_prompt=record.initial_prompt,
+        )
+        agent.record_feedback_annotation(sanitized)
+        agent.add_manual_correction(sanitized)
+        updated_spec = await agent.summarize()
+        artifacts = agent.export_spec(updated_spec)
+        archive.append_spec_update(
+            record_id,
+            scope=record.scope,
+            spec_text=updated_spec,
+            spec_path=artifacts.markdown_path,
+        )
+
+    async def _regenerate_live_session_spec(
+        session_state: BusinessAnalystSession,
+        feedback_message: str,
+    ) -> Optional[str]:
+        sanitized = feedback_message.strip()
+        if not sanitized:
+            return session_state.archived_record_id
+        session_state.agent.record_feedback_annotation(sanitized)
+        session_state.agent.add_manual_correction(sanitized)
+        updated_spec = await session_state.agent.summarize()
+        artifacts = session_state.agent.export_spec(updated_spec)
+        session_state.pending_spec_text = updated_spec
+        session_state.last_spec_text = updated_spec
+        session_state.last_spec_markdown_path = artifacts.markdown_path
+        session_state.last_spec_pdf_path = artifacts.pdf_path
+        record_id = session_state.agent.persist_transcript(
+            spec_text=updated_spec,
+            spec_path=artifacts.markdown_path,
+        )
+        if record_id:
+            session_state.archived_record_id = record_id
+            archive.refresh()
+        return session_state.archived_record_id
 
     image_pattern = re.compile(r"!\[[^\]]*\]\((?P<path>[^)]+)\)")
 
@@ -1123,15 +1180,15 @@ def create_app(
             raise HTTPException(status_code=400, detail="Feedback message cannot be empty.")
         record = archive.get(session_id)
         target_session_id = session_id
-        session_found = record is not None
+        session_state: Optional[BusinessAnalystSession] = None
 
-        if not session_found:
+        if record is None:
             for agent in agent_registry.values():
-                session_state = agent.get_session_by_id(session_id)
-                if session_state is None:
+                candidate = agent.get_session_by_id(session_id)
+                if candidate is None:
                     continue
-                session_found = True
-                archived_identifier = getattr(session_state, "archived_record_id", None)
+                session_state = candidate
+                archived_identifier = getattr(candidate, "archived_record_id", None)
                 if archived_identifier:
                     target_session_id = archived_identifier
                     record = archive.get(archived_identifier)
@@ -1140,12 +1197,31 @@ def create_app(
                         record = archive.get(archived_identifier)
                 break
 
-        if not session_found:
+        if record is None and session_state is not None:
+            new_record_id = await _regenerate_live_session_spec(session_state, message)
+            if new_record_id:
+                target_session_id = new_record_id
+                record = archive.get(new_record_id)
+                if record is None:
+                    archive.refresh()
+                    record = archive.get(new_record_id)
+
+        if record is None:
             archive.refresh()
-            record = archive.get(session_id)
+            record = archive.get(target_session_id)
             if record is None:
                 raise HTTPException(status_code=404, detail="Session not found.")
-            session_found = True
+
+        try:
+            await _regenerate_spec_from_feedback(target_session_id, record, message)
+        except Exception as exc:  # pragma: no cover - defensive path
+            logging.exception(
+                "Failed to apply feedback for session %s", target_session_id
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unable to update specification with feedback: {exc}",
+            ) from exc
 
         entry = _append_feedback_entry(target_session_id, message)
         return entry

@@ -468,25 +468,26 @@ export default function App() {
       try {
         const entry = await sessionClient.submitSpecFeedback(currentSessionId, trimmed);
         if (specSource === "historical" && selectedSessionId) {
-          setSelectedSessionDetail((current) => {
-            if (!current || current.id !== selectedSessionId) {
-              return current;
-            }
-            return {
-              ...current,
-              feedback: [...current.feedback, entry],
-            };
-          });
-          setSessionSummaries((current) =>
-            current.map((summary) =>
-              summary.id === selectedSessionId
-                ? {
-                    ...summary,
-                    feedbackCount: summary.feedbackCount + 1,
-                  }
-                : summary
-            )
-          );
+          let refreshed = false;
+          try {
+            const detail = await sessionClient.getSessionDetail(selectedSessionId);
+            setSelectedSessionDetail(detail);
+            refreshed = true;
+          } catch (detailError) {
+            console.error("Failed to refresh session detail after feedback", detailError);
+          }
+          if (!refreshed) {
+            setSelectedSessionDetail((current) => {
+              if (!current || current.id !== selectedSessionId) {
+                return current;
+              }
+              return {
+                ...current,
+                feedback: [...current.feedback, entry],
+              };
+            });
+          }
+          refreshSessionSummaries().catch(() => undefined);
         } else {
           setCurrentFeedbackEntries((current) => [...current, entry]);
         }
@@ -498,7 +499,7 @@ export default function App() {
         setIsFeedbackSubmitting(false);
       }
     },
-    [selectedSessionId, sessionClient, specSource, t]
+    [refreshSessionSummaries, selectedSessionId, sessionClient, specSource, t]
   );
 
   const handleRunTestAgent = useCallback(async () => {

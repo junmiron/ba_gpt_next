@@ -113,6 +113,77 @@ class TranscriptRepository:
 
         return record_id
 
+    def update_spec_summary(
+        self,
+        record_id: str,
+        *,
+        scope: InterviewScope,
+        spec_text: str,
+        spec_path: Optional[Path] = None,
+    ) -> None:
+        """Append a refreshed specification summary for an existing session."""
+
+        def _timestamp(dt: datetime) -> str:
+            return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        summary_timestamp = datetime.now(timezone.utc)
+        meta: Dict[str, Dict[str, Any]] = {
+            "_meta": {
+                "session_id": record_id,
+                "ts": _timestamp(summary_timestamp),
+                "n_records": 1,
+                "summary": True,
+                "scope": scope.value,
+                "spec_path": str(spec_path) if spec_path else None,
+            }
+        }
+        summary_entry: Dict[str, Any] = {
+            "speaker": "interviewer",
+            "message": spec_text,
+            "subject": "Functional Specification",
+            "q_index": 0,
+            "timestamp": _timestamp(summary_timestamp),
+        }
+
+        with self._archive_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(meta, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(summary_entry, ensure_ascii=False) + "\n")
+
+        client = self._get_redis()
+        if not client:
+            return
+
+        key = f"transcript:{record_id}"
+        record_blob: Dict[str, Any]
+        try:
+            if RedisJsonPath and hasattr(client, "json"):
+                record_blob = client.json().get(key) or {}
+                if not isinstance(record_blob, dict):
+                    record_blob = {}
+                record_blob["spec_text"] = spec_text
+                record_blob["spec_path"] = str(spec_path) if spec_path else None
+                client.json().set(key, RedisJsonPath.root_path(), record_blob)
+            else:
+                raw_value = client.get(key)
+                if raw_value:
+                    if isinstance(raw_value, bytes):
+                        decoded = raw_value.decode("utf-8")
+                    else:
+                        decoded = str(raw_value)
+                    try:
+                        record_blob = json.loads(decoded)
+                        if not isinstance(record_blob, dict):
+                            record_blob = {}
+                    except json.JSONDecodeError:
+                        record_blob = {}
+                else:
+                    record_blob = {}
+                record_blob["spec_text"] = spec_text
+                record_blob["spec_path"] = str(spec_path) if spec_path else None
+                client.set(key, json.dumps(record_blob, ensure_ascii=False))
+        except RedisError as exc:  # pragma: no cover - best effort path
+            logger.warning("Redis persistence failed for %s: %s", key, exc)
+
     @property
     def archive_path(self) -> Path:
         """Return the filesystem path for the JSONL archive."""

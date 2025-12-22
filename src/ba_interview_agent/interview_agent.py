@@ -1413,6 +1413,54 @@ class BusinessAnalystInterviewAgent:
 
         self._summarization_corrections.clear()
 
+    def load_transcript_history(
+        self,
+        *,
+        turns: Sequence[tuple[str, str]],
+        initial_prompt: str | None = None,
+    ) -> None:
+        """Replace the in-memory transcript with archived turns."""
+
+        transcript = InterviewTranscript(scope=self._scope)
+        transcript.initial_user_prompt = initial_prompt
+        for question, answer in turns:
+            transcript.append(question, answer)
+
+        self._transcript = transcript
+        self._subject_question_counts = [0] * len(SUBJECT_PLAN)
+        self._subjects_completed = [False] * len(SUBJECT_PLAN)
+        self._current_subject_idx = len(SUBJECT_PLAN)
+        self._pending_subject_index = None
+        self._active_subject_index = None
+        self._summarization_corrections.clear()
+        self._approved_as_is_items = None
+        self._approved_as_is_processes = None
+        self._as_is_confirmed_turns = len(transcript.turns)
+        self._as_is_signature = None
+        self._approved_future_state_items = None
+        self._approved_future_state_processes = None
+        self._future_state_confirmed_turns = len(transcript.turns)
+        self._future_state_signature = None
+        self._latest_summary_data = None
+        self._latest_spec_markdown = None
+
+    def add_manual_correction(self, instruction: str) -> None:
+        """Record a manual instruction to influence summarization."""
+
+        self._add_summarization_correction(instruction)
+
+    def record_feedback_annotation(self, note: str) -> None:
+        """Append stakeholder feedback into the transcript context."""
+
+        sanitized = note.strip()
+        if not sanitized:
+            return
+        self.record_manual_follow_up(
+            "Stakeholder feedback received after spec delivery.",
+            sanitized,
+            subject_name="Stakeholder Feedback",
+        )
+
     def record_manual_follow_up(
         self,
         question: str,
