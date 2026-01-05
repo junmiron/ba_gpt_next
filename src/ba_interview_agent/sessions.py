@@ -67,6 +67,12 @@ class BusinessAnalystSession:
             updates.extend(await self._handle_closing_feedback(normalized))
             return updates
 
+        if self.completed:
+            updates.extend(
+                await self._handle_post_completion_follow_up(normalized)
+            )
+            return updates
+
         if normalized.lower() in TERMINATION_TOKENS:
             updates.append(await self._finalize_session())
             return updates
@@ -175,4 +181,69 @@ class BusinessAnalystSession:
         self.completed = True
         self.awaiting_closing_feedback = False
         self.final_message = closing_message
+        return updates
+
+    async def _handle_post_completion_follow_up(
+        self,
+        user_text: str,
+    ) -> List[str]:
+        updates: List[str] = []
+        if not user_text:
+            return updates
+
+        lowered = user_text.lower()
+        if lowered in TERMINATION_TOKENS or lowered in NEGATIVE_FEEDBACK_RESPONSES:
+            updates.append(self.agent.feedback_ack_negative)
+            if self.final_message:
+                updates.append(self.final_message)
+            return updates
+
+        self.agent.record_manual_follow_up(
+            "Stakeholder follow-up after specification delivery.",
+            user_text,
+            subject_name="Stakeholder Feedback",
+        )
+
+        acknowledgement = self.agent.feedback_ack_positive
+        if acknowledgement:
+            updates.append(acknowledgement)
+
+        updated_spec = await self.agent.summarize()
+        spec_message = (
+            "Updated functional specification draft:\n\n"
+            f"{updated_spec}"
+        )
+        updates.append(spec_message)
+
+        artifacts = self.agent.export_spec(updated_spec)
+        record_id = self.agent.persist_transcript(
+            spec_text=updated_spec,
+            spec_path=artifacts.markdown_path,
+        )
+        if record_id:
+            self.archived_record_id = record_id
+
+        self.pending_spec_text = updated_spec
+        self.last_spec_text = updated_spec
+        self.last_spec_markdown_path = artifacts.markdown_path
+        self.last_spec_pdf_path = artifacts.pdf_path
+
+        closing_lines = [
+            self.agent.finalize_header,
+            f" - {self.agent.finalize_saved_label}: {artifacts.markdown_path}",
+        ]
+        if artifacts.pdf_path is not None:
+            closing_lines.append(
+                f" - {self.agent.finalize_pdf_label}: {artifacts.pdf_path}"
+            )
+        if record_id:
+            closing_lines.append(
+                f"{self.agent.finalize_record_label}: {record_id}"
+            )
+        closing_message = "\n".join(closing_lines)
+        updates.append(closing_message)
+
+        self.final_message = closing_message
+        self.completed = True
+        self.awaiting_closing_feedback = False
         return updates

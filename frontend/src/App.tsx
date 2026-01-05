@@ -87,6 +87,7 @@ export default function App() {
   const [scope, setScope] = useState<InterviewScope>(appConfig.defaultScope);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<SessionStatus>("idle");
+  const [sessionBootstrapKey, setSessionBootstrapKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"chat" | "spec" | "transcript">("chat");
   const [specPreview, setSpecPreview] = useState<SpecPreview | null>(null);
@@ -105,6 +106,11 @@ export default function App() {
     () => new AguiSessionClient(appConfig.apiBaseUrl, scope, language),
     [scope, language],
   );
+
+  const startNewSession = useCallback(() => {
+    sessionClient.startNewConversation();
+    setSessionBootstrapKey((key) => key + 1);
+  }, [sessionClient]);
 
   const messageRef = useRef<AgentMessage[]>(messages);
   const streamRef = useRef<{ abort: () => void; kind: "sse" | "test" } | null>(null);
@@ -201,6 +207,10 @@ export default function App() {
     }
   }, [applyMessages]);
 
+  useEffect(() => {
+    startNewSession();
+  }, [startNewSession]);
+
   useEffect(() => () => streamRef.current?.abort(), []);
 
   useEffect(() => {
@@ -210,14 +220,27 @@ export default function App() {
   }, [status]);
 
   useEffect(() => {
+    if (sessionBootstrapKey === 0) {
+      return;
+    }
+
     streamRef.current?.abort();
+
     applyMessages(() => []);
+    setViewMode("chat");
+    setSpecPreview(null);
+    setShowSpecDialog(false);
+    setSelectedSessionId(null);
+    setSelectedSessionDetail(null);
+    setSpecSource("current");
+    setCurrentFeedbackEntries([]);
     setError(null);
     setStatus("streaming");
 
     let cancelled = false;
     const stream = sessionClient.stream([], { state: { language } });
-    streamRef.current = { abort: stream.abort, kind: "sse" };
+    const { abort } = stream;
+    streamRef.current = { abort, kind: "sse" };
 
     (async () => {
       try {
@@ -250,7 +273,7 @@ export default function App() {
           ]);
         }
       } finally {
-        if (streamRef.current?.abort === stream.abort) {
+        if (streamRef.current?.abort === abort) {
           streamRef.current = null;
         }
       }
@@ -258,9 +281,12 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      streamRef.current?.abort();
+      abort();
+      if (streamRef.current?.abort === abort) {
+        streamRef.current = null;
+      }
     };
-  }, [applyMessages, handleStreamEvent, sessionClient, language]);
+  }, [sessionBootstrapKey, sessionClient, language, applyMessages, handleStreamEvent]);
 
   const handleSend = useCallback(
     async (text: string) => {
@@ -757,6 +783,7 @@ export default function App() {
         </div>
         <ActionDrawer
           status={status}
+          onStartNewSession={startNewSession}
           onRunTestAgent={handleRunTestAgent}
           onRequestExport={handleRequestExport}
         />

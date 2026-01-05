@@ -492,6 +492,11 @@ export class AguiSessionClient {
     return this.threadId;
   }
 
+  startNewConversation(): void {
+    this.threadId = generateId("thread");
+    this.runCounter = 0;
+  }
+
   stream(messages: AgentMessage[], options: StreamOptions = {}): StreamResult {
     const controller = new AbortController();
     const mergedSignal = options.signal;

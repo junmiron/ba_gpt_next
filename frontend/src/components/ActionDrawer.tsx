@@ -3,11 +3,12 @@ import type { SessionStatus } from "./ChatPanel";
 
 interface ActionDrawerProps {
   status: SessionStatus;
+  onStartNewSession: () => void;
   onRunTestAgent: () => void;
   onRequestExport: () => void;
 }
 
-export function ActionDrawer({ status, onRunTestAgent, onRequestExport }: ActionDrawerProps) {
+export function ActionDrawer({ status, onStartNewSession, onRunTestAgent, onRequestExport }: ActionDrawerProps) {
   const disabled = status === "streaming";
   const { t } = useLocalization();
 
@@ -17,6 +18,14 @@ export function ActionDrawer({ status, onRunTestAgent, onRequestExport }: Action
         <h2>{t("drawer.title")}</h2>
         <p>{t("drawer.description")}</p>
       </header>
+
+      <section className="action-card">
+        <h3>{t("drawer.session.title")}</h3>
+        <p>{t("drawer.session.description")}</p>
+        <button type="button" onClick={onStartNewSession} disabled={disabled}>
+          {t("drawer.session.button")}
+        </button>
+      </section>
 
       <section className="action-card">
         <h3>{t("drawer.testAgent.title")}</h3>

@@ -173,6 +173,10 @@ class BusinessAnalystAGUIAgent:
         self._session_lookup: dict[str, BusinessAnalystSession] = {}
         self._retained_session_keys: list[str] = []
         self._retained_session_limit = 8
+        self._thread_record_index_path = (
+            self._settings.output_dir / "thread_record_index.json"
+        )
+        self._thread_record_index = self._load_thread_record_index()
         # Minimal surfaces expected by AgentFrameworkAgent orchestrators
         self.chat_options = SimpleNamespace(tools=None, response_format=None)
         self.chat_client = SimpleNamespace(
@@ -182,6 +186,68 @@ class BusinessAnalystAGUIAgent:
     @property
     def id(self) -> str:
         return self._id
+
+    def _load_thread_record_index(self) -> dict[str, str]:
+        if not self._thread_record_index_path.exists():
+            return {}
+        try:
+            raw = self._thread_record_index_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            logging.warning(
+                "Unable to load thread record index from %s",
+                self._thread_record_index_path,
+            )
+            return {}
+        if not isinstance(data, Mapping):
+            return {}
+        result: dict[str, str] = {}
+        for key, value in data.items():
+            if isinstance(key, str) and isinstance(value, str):
+                result[key] = value
+        return result
+
+    def _persist_thread_record_index(self) -> None:
+        try:
+            payload = json.dumps(
+                dict(sorted(self._thread_record_index.items())),
+                ensure_ascii=False,
+                indent=2,
+            )
+            self._thread_record_index_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            self._thread_record_index_path.write_text(
+                payload,
+                encoding="utf-8",
+            )
+        except OSError:
+            logging.exception(
+                "Failed to persist thread record index to %s",
+                self._thread_record_index_path,
+            )
+
+    def get_record_id_for_thread(self, thread_identifier: str) -> Optional[str]:
+        return self._thread_record_index.get(thread_identifier)
+
+    def remember_session_record(self, session: BusinessAnalystSession) -> None:
+        self._remember_record_mapping(session)
+
+    def remember_thread_record(self, thread_identifier: str, record_id: str) -> None:
+        if not thread_identifier.startswith("thread_"):
+            return
+        if not record_id:
+            return
+        if self._thread_record_index.get(thread_identifier) == record_id:
+            return
+        self._thread_record_index[thread_identifier] = record_id
+        logging.info(
+            "Persisting thread record mapping for thread=%s record=%s",
+            thread_identifier,
+            record_id,
+        )
+        self._persist_thread_record_index()
 
     @property
     def name(self) -> str:
@@ -306,9 +372,7 @@ class BusinessAnalystAGUIAgent:
             await self._append_assistant_message(thread, update)
             yield self._as_update(update)
 
-        if session_state.completed:
-            self._sessions.pop(thread, None)
-            self._unregister_session(thread, keep_lookup=True)
+        self._remember_record_mapping(session_state)
 
     async def _append_user_message(
         self,
@@ -441,6 +505,13 @@ class BusinessAnalystAGUIAgent:
 
     def _compute_thread_keys(self, thread: AgentThread) -> list[str]:
         keys: list[str] = []
+
+        def _append(value: object) -> None:
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized:
+                    keys.append(normalized)
+
         for attr in (
             "id",
             "thread_id",
@@ -449,9 +520,20 @@ class BusinessAnalystAGUIAgent:
             "service_thread_id",
             "conversation_id",
         ):
-            value = getattr(thread, attr, None)
-            if isinstance(value, str) and value.strip():
-                keys.append(value.strip())
+            _append(getattr(thread, attr, None))
+
+        metadata = getattr(thread, "metadata", None)
+        if isinstance(metadata, Mapping):
+            for meta_key in (
+                "ag_ui_thread_id",
+                "thread_id",
+                "threadId",
+                "identifier",
+                "service_thread_id",
+                "conversation_id",
+            ):
+                _append(metadata.get(meta_key))
+
         keys.append(str(id(thread)))
         normalized: list[str] = []
         seen: set[str] = set()
@@ -460,6 +542,22 @@ class BusinessAnalystAGUIAgent:
                 seen.add(key)
                 normalized.append(key)
         return normalized
+
+    def _remember_record_mapping(
+        self,
+        session: BusinessAnalystSession,
+    ) -> None:
+        record_id = session.archived_record_id
+        if not record_id:
+            return
+        relevant_keys: list[str] = []
+        for key, candidate in self._session_lookup.items():
+            if candidate is session and key.startswith("thread_"):
+                relevant_keys.append(key)
+        if not relevant_keys:
+            return
+        for key in relevant_keys:
+            self.remember_thread_record(key, record_id)
 
     def _register_session(
         self,
@@ -478,6 +576,7 @@ class BusinessAnalystAGUIAgent:
             self._session_lookup[key] = session
             if key in self._retained_session_keys:
                 self._retained_session_keys.remove(key)
+        self._remember_record_mapping(session)
         logging.debug(
             "Registered session for scope=%s thread_keys=%s",
             self._scope.value,
@@ -492,9 +591,14 @@ class BusinessAnalystAGUIAgent:
     ) -> None:
         keys = self._thread_keys.pop(thread, [])
         if keep_lookup:
+            retained_session: Optional[BusinessAnalystSession] = None
             for key in keys:
                 if key not in self._retained_session_keys:
                     self._retained_session_keys.append(key)
+                if retained_session is None:
+                    retained_session = self._session_lookup.get(key)
+            if retained_session is not None:
+                self._remember_record_mapping(retained_session)
             self._trim_retained_sessions()
             return
 
@@ -513,12 +617,22 @@ class BusinessAnalystAGUIAgent:
         self,
         thread_identifier: str,
     ) -> Optional[BusinessAnalystSession]:
-        return self._session_lookup.get(thread_identifier)
+        session = self._session_lookup.get(thread_identifier)
+        if session is None:
+            logging.debug(
+                "Lookup miss for thread=%s scope=%s known=%s",
+                thread_identifier,
+                self._scope.value,
+                list(self._session_lookup.keys()),
+            )
+        return session
 
     def _trim_retained_sessions(self) -> None:
         while len(self._retained_session_keys) > self._retained_session_limit:
             oldest = self._retained_session_keys.pop(0)
             session = self._session_lookup.get(oldest)
+            if session is not None:
+                self._remember_record_mapping(session)
             if session is not None and session in self._sessions.values():
                 self._retained_session_keys.append(oldest)
                 continue
@@ -728,6 +842,53 @@ def create_app(
             created_at=timestamp,
         )
 
+    def _load_spec_from_record(
+        record: TranscriptRecord,
+    ) -> tuple[str, SimpleNamespace]:
+        markdown_path = record.spec_path if record.spec_path and record.spec_path.exists() else None
+        spec_text = record.spec_text or ""
+        if not spec_text and markdown_path is not None:
+            try:
+                spec_text = markdown_path.read_text(encoding="utf-8")
+            except OSError:
+                spec_text = ""
+        pdf_path = None
+        if markdown_path is not None:
+            candidate_pdf = markdown_path.with_suffix(".pdf")
+            if candidate_pdf.exists():
+                pdf_path = candidate_pdf
+        return spec_text, SimpleNamespace(
+            markdown_path=markdown_path,
+            pdf_path=pdf_path,
+        )
+
+    def _find_record_by_spec_path(
+        path: Path,
+        scope_hint: Optional[InterviewScope],
+    ) -> Optional[TranscriptRecord]:
+        if not path.exists():
+            return None
+
+        resolved = path.resolve()
+
+        def _match(records: Iterable[TranscriptRecord]) -> Optional[TranscriptRecord]:
+            for entry in records:
+                if entry.spec_path and entry.spec_path.exists():
+                    try:
+                        if entry.spec_path.resolve() == resolved:
+                            return entry
+                    except OSError:
+                        continue
+            return None
+
+        candidates = archive.list(limit=200, scope=scope_hint)
+        match = _match(candidates)
+        if match is not None:
+            return match
+        archive.refresh()
+        candidates = archive.list(limit=200, scope=scope_hint)
+        return _match(candidates)
+
     async def _regenerate_spec_from_feedback(
         record_id: str,
         record: TranscriptRecord,
@@ -774,6 +935,9 @@ def create_app(
         if record_id:
             session_state.archived_record_id = record_id
             archive.refresh()
+            owning_agent = agent_registry.get(session_state.agent.scope.value)
+            if owning_agent is not None:
+                owning_agent.remember_session_record(session_state)
         return session_state.archived_record_id
 
     image_pattern = re.compile(r"!\[[^\]]*\]\((?P<path>[^)]+)\)")
@@ -1122,26 +1286,13 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="Session not found.")
 
-        markdown_path = record.spec_path if record.spec_path and record.spec_path.exists() else None
-        markdown_text = record.spec_text or ""
-        if not markdown_text and markdown_path is not None:
-            try:
-                markdown_text = markdown_path.read_text(encoding="utf-8")
-            except OSError:
-                markdown_text = ""
-
-        diagrams = _collect_svg_assets(markdown_text, markdown_path)
-
-        pdf_path = None
-        if markdown_path is not None:
-            candidate_pdf = markdown_path.with_suffix(".pdf")
-            if candidate_pdf.exists():
-                pdf_path = candidate_pdf
+        markdown_text, artifacts = _load_spec_from_record(record)
+        diagrams = _collect_svg_assets(markdown_text, artifacts.markdown_path)
 
         spec_payload = SpecPreviewResponse(
             markdown=markdown_text,
-            markdown_path=_relative_to_output(markdown_path),
-            pdf_path=_relative_to_output(pdf_path),
+            markdown_path=_relative_to_output(artifacts.markdown_path),
+            pdf_path=_relative_to_output(artifacts.pdf_path),
             diagrams=diagrams,
         )
 
@@ -1206,22 +1357,45 @@ def create_app(
                     archive.refresh()
                     record = archive.get(new_record_id)
 
+        if record is None and session_state is None:
+            for agent in agent_registry.values():
+                mapped_record_id = agent.get_record_id_for_thread(target_session_id)
+                if not mapped_record_id:
+                    continue
+                candidate = archive.get(mapped_record_id)
+                if candidate is None:
+                    archive.refresh()
+                    candidate = archive.get(mapped_record_id)
+                if candidate is None:
+                    continue
+                target_session_id = mapped_record_id
+                record = candidate
+                break
+
         if record is None:
             archive.refresh()
             record = archive.get(target_session_id)
-            if record is None:
-                raise HTTPException(status_code=404, detail="Session not found.")
 
-        try:
-            await _regenerate_spec_from_feedback(target_session_id, record, message)
-        except Exception as exc:  # pragma: no cover - defensive path
-            logging.exception(
-                "Failed to apply feedback for session %s", target_session_id
+        if record is None and session_state is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+
+        if record is not None:
+            try:
+                await _regenerate_spec_from_feedback(target_session_id, record, message)
+            except Exception as exc:  # pragma: no cover - defensive path
+                logging.exception(
+                    "Failed to apply feedback for session %s", target_session_id
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Unable to update specification with feedback: {exc}",
+                ) from exc
+        else:
+            logging.info(
+                "Feedback applied to live session %s without archived record;"
+                " retained in-memory spec update only.",
+                target_session_id,
             )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Unable to update specification with feedback: {exc}",
-            ) from exc
 
         entry = _append_feedback_entry(target_session_id, message)
         return entry
@@ -1235,7 +1409,29 @@ def create_app(
             raise HTTPException(status_code=400, detail="thread_id is required.")
 
         session = agent.get_session_by_id(thread_id)
+        record: Optional[TranscriptRecord] = None
+        spec_text = ""
+        artifacts = SimpleNamespace(markdown_path=None, pdf_path=None)
+        resolved_scope = scope
         if session is None:
+            mapped_record_id = agent.get_record_id_for_thread(thread_id)
+            if mapped_record_id:
+                record = archive.get(mapped_record_id)
+                if record is None:
+                    archive.refresh()
+                    record = archive.get(mapped_record_id)
+                if record is not None:
+                    spec_text, artifacts = _load_spec_from_record(record)
+                    resolved_scope = record.scope
+                    if resolved_scope != scope:
+                        logging.info(
+                            "Serving specification from scope=%s for request scope=%s",
+                            resolved_scope.value,
+                            scope.value,
+                        )
+                    agent.remember_thread_record(thread_id, record.id)
+
+        if session is None and record is None:
             logging.info(
                 "Spec preview using disk fallback (scope=%s thread=%s)",
                 scope.value,
@@ -1259,7 +1455,15 @@ def create_app(
                     resolved_scope.value,
                     scope.value,
                 )
-        else:
+            if artifacts.markdown_path is not None:
+                matched_record = _find_record_by_spec_path(
+                    artifacts.markdown_path,
+                    resolved_scope,
+                )
+                if matched_record is not None:
+                    agent.remember_thread_record(thread_id, matched_record.id)
+                    record = matched_record
+        elif session is not None:
             try:
                 spec_text, artifacts = await session.generate_spec_preview(
                     force_refresh=payload.refresh,
@@ -1289,31 +1493,65 @@ def create_app(
             raise HTTPException(status_code=400, detail="thread_id query parameter is required.")
 
         session = agent.get_session_by_id(normalized_thread)
+        record: Optional[TranscriptRecord] = None
+        resolved_scope = scope
+        pdf_path: Optional[Path] = None
         if session is None:
-            logging.info(
-                "Spec PDF using disk fallback (scope=%s thread=%s)",
-                scope.value,
-                normalized_thread,
-            )
-            fallback = _load_latest_spec_from_disk(scope) or _load_latest_spec_from_disk()
-            if fallback is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Active session not found for the requested thread.",
-                )
-            _, artifacts, resolved_scope = fallback
-            if artifacts.pdf_path is None or not artifacts.pdf_path.exists():
-                raise HTTPException(
-                    status_code=404,
-                    detail="Specification PDF is not available for this session.",
-                )
-            pdf_path = artifacts.pdf_path
-            if resolved_scope != scope:
+            mapped_record_id = agent.get_record_id_for_thread(normalized_thread)
+            if mapped_record_id:
+                record = archive.get(mapped_record_id)
+                if record is None:
+                    archive.refresh()
+                    record = archive.get(mapped_record_id)
+                if record is not None:
+                    _, artifacts = _load_spec_from_record(record)
+                    if artifacts.pdf_path is not None and artifacts.pdf_path.exists():
+                        pdf_path = artifacts.pdf_path
+                        resolved_scope = record.scope
+                        if resolved_scope != scope:
+                            logging.info(
+                                "Serving PDF from scope=%s for request scope=%s",
+                                resolved_scope.value,
+                                scope.value,
+                            )
+                        agent.remember_thread_record(normalized_thread, record.id)
+
+        if session is None:
+            if pdf_path is None:
                 logging.info(
-                    "Serving PDF from scope=%s for request scope=%s",
-                    resolved_scope.value,
+                    "Spec PDF using disk fallback (scope=%s thread=%s)",
                     scope.value,
+                    normalized_thread,
                 )
+                fallback = _load_latest_spec_from_disk(scope) or _load_latest_spec_from_disk()
+                if fallback is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Active session not found for the requested thread.",
+                    )
+                _, artifacts, resolved_scope = fallback
+                if artifacts.pdf_path is None or not artifacts.pdf_path.exists():
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Specification PDF is not available for this session.",
+                    )
+                pdf_path = artifacts.pdf_path
+                if resolved_scope != scope:
+                    logging.info(
+                        "Serving PDF from scope=%s for request scope=%s",
+                        resolved_scope.value,
+                        scope.value,
+                    )
+                if artifacts.markdown_path is not None:
+                    matched_record = _find_record_by_spec_path(
+                        artifacts.markdown_path,
+                        resolved_scope,
+                    )
+                    if matched_record is not None:
+                        agent.remember_thread_record(
+                            normalized_thread,
+                            matched_record.id,
+                        )
         else:
             pdf_path = session.last_spec_pdf_path
             if pdf_path is None or not pdf_path.exists():
